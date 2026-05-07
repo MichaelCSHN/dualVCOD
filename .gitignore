@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+dist/
+build/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+*.env
+
+# Datasets — NEVER commit raw data
+data/
+datasets/
+MoCA/
+MoCA_Mask/
+CamouflagedAnimalDataset/
+COD10K/
+CAMO/
+NC4K/
+*_datasets/
+
+# Checkpoints and model weights — NEVER commit
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.engine
+*.tflite
+
+# Audit tensor caches
+audit_outputs/
+
+# Logs and experiment outputs
+runs/
+wandb/
+tensorboard/
+logs/
+*.log
+
+# Cache / temporary
+.cache/
+tmp/
+temp/
+*.tmp
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Large generated assets
+reports/visual_audit_images/
+reports/paper_assets/
+*.mp4
+*.avi
+*.mov
