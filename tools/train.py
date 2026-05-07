@@ -124,9 +124,13 @@ def validate(model, loader):
     return metrics["mean_iou"], metrics["recall@0.5"]
 
 
-def save_checkpoint(model, optimizer, epoch, miou, recall, tag):
+def save_checkpoint(model, optimizer, epoch, miou, recall, tag, clean=False):
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    path = os.path.join(CHECKPOINT_DIR, f"best_greenvcod_box_{tag}.pth")
+    if clean:
+        fname = f"clean_seed42_epoch{epoch:03d}.pth"
+    else:
+        fname = f"clean_seed42_best_{tag}.pth"
+    path = os.path.join(CHECKPOINT_DIR, fname)
     torch.save(
         {
             "epoch": epoch,
@@ -172,22 +176,65 @@ def run_full_training(args):
     train_vids = len({_video_name_from_sample(moca_split_ds.samples[i]) for i in train_idx})
     val_vids = len({_video_name_from_sample(moca_split_ds.samples[i]) for i in val_idx})
     print(f"  MoCA video split  : {train_vids} train / {val_vids} val  ({len(train_idx)} / {len(val_idx)} windows)")
+
+    # Extract MoCA val canonical_video_ids for filtering MoCA_Mask and CAD
+    val_canonical_ids = set()
+    for idx in val_idx:
+        val_canonical_ids.add(_video_name_from_sample(moca_split_ds.samples[idx]))
+    print(f"  MoCA val canonical_video_ids: {len(val_canonical_ids)}")
     print()
 
     # STEP 1: Build joint training set — MoCA portion is FILTERED by train_idx.
+    #          MoCA_Mask and CAD are filtered by canonical_video_id against MoCA val.
     print("  Loading training datasets (augmentation ON) ...")
     train_sets = []
+    all_excluded_videos = {}  # dataset_name -> set of excluded canonical_video_ids
     for root in DATASET_ROOTS:
         if not os.path.isdir(root):
             print(f"    {os.path.basename(root):12s} : [NOT FOUND — skipped]")
             continue
         ds = RealVideoBBoxDataset([root], T=args.T, target_size=224, augment=True)
+        name = os.path.basename(root)
         # CRITICAL: filter MoCA to train split ONLY — prevents val leakage
         if "MoCA" in root and "MoCA_Mask" not in root:
             ds = Subset(ds, train_idx)
-            print(f"    {os.path.basename(root):12s} : {len(ds):5d} windows  [TRAIN-ONLY, filtered]")
+            print(f"    {name:12s} : {len(ds):5d} windows  [TRAIN-ONLY, filtered]")
+        elif "MoCA_Mask" in root:
+            # Filter out any video whose canonical_video_id matches a MoCA val video
+            valid_indices = []
+            excluded = set()
+            for i, s in enumerate(ds.samples):
+                cid = _video_name_from_sample(s)
+                if cid in val_canonical_ids:
+                    excluded.add(cid)
+                else:
+                    valid_indices.append(i)
+            if excluded:
+                all_excluded_videos["MoCA_Mask"] = excluded
+            ds = Subset(ds, valid_indices)
+            print(f"    {name:12s} : {len(ds):5d} windows  [filtered by canonical_video_id, excluded {len(excluded)} videos]")
+            if excluded:
+                for v in sorted(excluded):
+                    print(f"           EXCLUDED: {v}")
+        elif "CamouflagedAnimalDataset" in root:
+            # Filter out any video whose canonical_video_id matches a MoCA val video
+            valid_indices = []
+            excluded = set()
+            for i, s in enumerate(ds.samples):
+                cid = _video_name_from_sample(s)
+                if cid in val_canonical_ids:
+                    excluded.add(cid)
+                else:
+                    valid_indices.append(i)
+            if excluded:
+                all_excluded_videos["CAD"] = excluded
+            ds = Subset(ds, valid_indices)
+            print(f"    {name:12s} : {len(ds):5d} windows  [filtered by canonical_video_id, excluded {len(excluded)} videos]")
+            if excluded:
+                for v in sorted(excluded):
+                    print(f"           EXCLUDED: {v}")
         else:
-            print(f"    {os.path.basename(root):12s} : {len(ds):5d} windows")
+            print(f"    {name:12s} : {len(ds):5d} windows")
         train_sets.append(ds)
 
     joint_train_ds = ConcatDataset(train_sets) if len(train_sets) > 1 else train_sets[0]
@@ -199,6 +246,37 @@ def run_full_training(args):
     val_moca_ds = RealVideoBBoxDataset([DATASET_ROOTS[0]], T=args.T, target_size=224, augment=False)
     print(f"    MoCA val  : {len(val_idx)} windows  ({val_vids} videos)")
     print(f"    Joint train total: {len(joint_train_ds)} windows")
+
+    # ── CANONICAL VIDEO ID OVERLAP GUARD ─────────────────────────────
+    # Collect all canonical_video_ids from the joint training set
+    joint_train_cids = set()
+    for sub_ds in train_sets:
+        if hasattr(sub_ds, 'indices') and hasattr(sub_ds, 'dataset'):
+            for idx in sub_ds.indices:
+                joint_train_cids.add(_video_name_from_sample(sub_ds.dataset.samples[idx]))
+        else:
+            for i in range(len(sub_ds)):
+                joint_train_cids.add(_video_name_from_sample(sub_ds.samples[i]))
+
+    overlap = joint_train_cids & val_canonical_ids
+    print(f"  JointTrain canonical_video_ids : {len(joint_train_cids)}")
+    print(f"  Val canonical_video_ids        : {len(val_canonical_ids)}")
+    print(f"  Overlap                        : {len(overlap)}")
+
+    if overlap:
+        print()
+        print(f"  " + "=" * 65)
+        print(f"  *** TRAINING REFUSED — canonical_video_id overlap detected ***")
+        print(f"  " + "=" * 65)
+        print(f"  {len(overlap)} video(s) appear in BOTH JointTrain and Val:")
+        for v in sorted(overlap):
+            print(f"    LEAK: {v}")
+        print()
+        print(f"  Run: python tools/verify_leak_fix.py  for full diagnostic report.")
+        print(f"  All overlap must be 0 before training is allowed.")
+        sys.exit(1)
+
+    print(f"  [OK] Zero canonical_video_id overlap — safe to proceed.")
     print()
 
     train_loader = DataLoader(
@@ -260,13 +338,20 @@ def run_full_training(args):
         log_step(epoch, tr_loss, tr_miou, val_miou, val_recall, current_lr, e_time)
 
         # Checkpoint best models
-        if val_miou > best_miou:
-            best_miou = val_miou
-            save_checkpoint(model, optimizer, epoch, val_miou, val_recall, "miou")
+        is_smoke = (args.epochs == 1 and not args.resume)
 
-        if val_recall > best_recall:
-            best_recall = val_recall
-            save_checkpoint(model, optimizer, epoch, val_miou, val_recall, "recall")
+        if is_smoke:
+            # Smoke training: always save clean epoch checkpoint (once)
+            # Only save on first epoch to avoid duplicates from best_miou/best_recall both firing
+            save_checkpoint(model, optimizer, epoch, val_miou, val_recall, "smoke", clean=True)
+        else:
+            if val_miou > best_miou:
+                best_miou = val_miou
+                save_checkpoint(model, optimizer, epoch, val_miou, val_recall, "miou")
+
+            if val_recall > best_recall:
+                best_recall = val_recall
+                save_checkpoint(model, optimizer, epoch, val_miou, val_recall, "recall")
 
     total_time = time.time() - t0
 
