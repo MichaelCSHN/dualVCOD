@@ -80,10 +80,12 @@ class RealVideoBBoxDataset(Dataset):
         dataset_names: optional list of names matching dataset_paths
     """
 
-    def __init__(self, dataset_paths, T=5, target_size=224, dataset_names=None, augment=False):
+    def __init__(self, dataset_paths, T=5, target_size=224, dataset_names=None, augment=False,
+                 temporal_stride=1):
         self.T = T
         self.target_size = target_size
         self.augment = augment
+        self.temporal_stride = temporal_stride
         self.samples = []  # list of {path, video, start_frame, annot_interval, bbox_map}
 
         if dataset_names is None:
@@ -138,7 +140,7 @@ class RealVideoBBoxDataset(Dataset):
             interval = ann_frames[1] - ann_frames[0] if len(ann_frames) > 1 else 1
 
             for start_idx in ann_frames[: len(ann_frames) - self.T + 1]:
-                needed_frames = [start_idx + i * interval for i in range(self.T)]
+                needed_frames = [start_idx + i * interval * self.temporal_stride for i in range(self.T)]
                 if all(f in bbox_map for f in needed_frames):
                     self.samples.append(
                         {
@@ -185,7 +187,7 @@ class RealVideoBBoxDataset(Dataset):
 
                 video_dir = os.path.join(split_dir, video)
                 for start_idx in gt_indices[: len(gt_indices) - self.T + 1]:
-                    needed = [start_idx + i * interval for i in range(self.T)]
+                    needed = [start_idx + i * interval * self.temporal_stride for i in range(self.T)]
                     if all(f in bbox_map for f in needed):
                         self.samples.append(
                             {
@@ -258,7 +260,7 @@ class RealVideoBBoxDataset(Dataset):
                 continue
 
             for start_idx in gt_indices[: len(gt_indices) - self.T + 1]:
-                needed = [start_idx + i * interval for i in range(self.T)]
+                needed = [start_idx + i * interval * self.temporal_stride for i in range(self.T)]
                 if all(f in bbox_map for f in needed):
                     self.samples.append(
                         {

@@ -119,16 +119,32 @@ class MicroVCOD_Lite(nn.Module):
 
 
 class SpatialEncoderFPN(nn.Module):
-    """Multi-scale FPN backbone using pretrained MobileNetV3-Small.
+    """Multi-scale FPN backbone supporting swappable torchvision backbones.
 
     Extracts features at stride 8, 16, 32 and fuses them via top-down
     pathway into a single 128-channel feature map at stride 8.
 
+    backbone_name="mobilenet_v3_small" uses the exact baseline code path.
+    Other backbones use the registry (tools/autoresearch/backbone_registry.py)
+    with dynamic channel probing.
+
     For 224×224 input the output is (128, 28, 28).
     """
 
-    def __init__(self, pretrained=True):
+    def __init__(self, backbone_name="mobilenet_v3_small", pretrained=True):
         super().__init__()
+        self._backbone_name = backbone_name
+
+        if backbone_name == "mobilenet_v3_small":
+            self._init_mobilenet_v3_small(pretrained)
+        else:
+            self._init_from_registry(backbone_name, pretrained)
+
+        self.out_channels = 128
+
+    # ── baseline code path (preserved exactly for B0 compatibility) ─────
+
+    def _init_mobilenet_v3_small(self, pretrained):
         backbone = torchvision.models.mobilenet_v3_small(
             weights=(
                 torchvision.models.MobileNet_V3_Small_Weights.IMAGENET1K_V1
@@ -154,7 +170,49 @@ class SpatialEncoderFPN(nn.Module):
         for m in [self.lat4, self.lat3, self.lat2]:
             nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
 
-        self.out_channels = 128
+    # ── registry-based code path (B1+ backbones) ────────────────────────
+
+    @staticmethod
+    def _ensure_project_root_in_sys_path():
+        import sys, os
+        _proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _proj_root not in sys.path:
+            sys.path.insert(0, _proj_root)
+
+    def _init_from_registry(self, backbone_name, pretrained):
+        self._ensure_project_root_in_sys_path()
+        from tools.autoresearch.backbone_registry import get_backbone_config
+
+        cfg = get_backbone_config(backbone_name)
+        factory = cfg["factory"]
+        slices = cfg["stage_slices"]
+
+        backbone = factory(pretrained=pretrained)
+
+        self.stage2 = backbone[slices[0][0]:slices[0][1]]
+        self.stage3 = backbone[slices[1][0]:slices[1][1]]
+        self.stage4 = backbone[slices[2][0]:slices[2][1]]
+
+        channels = self._probe_channels()
+        self._stage_channels = channels
+
+        self.lat4 = nn.Conv2d(channels[2], 128, 1)
+        self.lat3 = nn.Conv2d(channels[1], 128, 1)
+        self.lat2 = nn.Conv2d(channels[0], 128, 1)
+        self.smooth3 = nn.Conv2d(128, 128, 3, padding=1)
+        self.smooth2 = nn.Conv2d(128, 128, 3, padding=1)
+
+        for m in [self.lat4, self.lat3, self.lat2]:
+            nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+
+    def _probe_channels(self):
+        dummy = torch.randn(1, 3, 224, 224)
+        x = dummy
+        channels = []
+        for stage in [self.stage2, self.stage3, self.stage4]:
+            x = stage(x)
+            channels.append(x.shape[1])
+        return channels
 
     def forward(self, x):
         c2 = self.stage2(x)
@@ -170,6 +228,30 @@ class SpatialEncoderFPN(nn.Module):
         return p2  # (B, 128, H/8, W/8)
 
 
+class ObjectnessHead(nn.Module):
+    """Predicts per-frame objectness score — auxiliary supervision.
+
+    Takes FPN features, outputs scalar [0,1] per frame indicating
+    foreground presence. Used during training only; deployment is bbox-only.
+    """
+
+    def __init__(self, in_channels=128):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(in_channels, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, 1),
+            # No Sigmoid — BCEWithLogitsLoss handles logit→prob internally
+        )
+
+    def forward(self, x):
+        B, T, C, H, W = x.shape
+        x = x.reshape(B * T, C, H, W)
+        x = self.pool(x).flatten(1)
+        return self.fc(x).reshape(B, T, 1)
+
+
 class MicroVCOD(nn.Module):
     """MicroVCOD — Micro Video Camouflaged Object Detection.
 
@@ -181,14 +263,21 @@ class MicroVCOD(nn.Module):
 
     Input:  (B, T, C, H, W)
     Output: (B, T, 4)  — normalized BBoxes (x1, y1, x2, y2) in [0, 1].
+
+    When head_type="objectness_aux_head": also returns (B, T, 1) objectness scores
+    during training for auxiliary BCE loss.
     """
 
-    def __init__(self, T=5, in_channels=3, pretrained_backbone=True):
+    def __init__(self, T=5, in_channels=3, pretrained_backbone=True,
+                 backbone_name="mobilenet_v3_small", head_type="current_direct_bbox"):
         super().__init__()
         self.T = T
-        self.spatial_encoder = SpatialEncoderFPN(pretrained=pretrained_backbone)
+        self._backbone_name = backbone_name
+        self._head_type = head_type
+        self.spatial_encoder = SpatialEncoderFPN(backbone_name=backbone_name, pretrained=pretrained_backbone)
         self.temporal_neck = TemporalNeighborhood(T=T, channels=128)
         self.bbox_head = BBoxHead(in_channels=128)
+        self.objectness_head = ObjectnessHead(in_channels=128) if head_type == "objectness_aux_head" else None
 
     def forward(self, x):
         B, T, C, H, W = x.shape
@@ -199,4 +288,11 @@ class MicroVCOD(nn.Module):
         feat = feat.reshape(B, T, Cf, Hf, Wf)
 
         feat = self.temporal_neck(feat)
-        return self.bbox_head(feat)
+
+        bbox = self.bbox_head(feat)
+
+        if self.objectness_head is not None and self.training:
+            obj = self.objectness_head(feat)
+            return bbox, obj
+
+        return bbox
