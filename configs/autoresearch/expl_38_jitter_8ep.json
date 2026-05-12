@@ -1,0 +1,31 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 8,
+  "total_epochs": 8,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "weight_decay": 0.0001,
+  "jitter_strength": 0.3,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-38: jitter_strength=0.3 8ep probe. Double color jitter (±0.15→±0.3) to combat overfitting. If best > E-28 (0.2893) by >=0.005, stronger augmentation is worth 30ep verification. If flat, next test RandAugment or MixUp.",
+  "trial_id": "expl_38_jitter_8ep",
+  "parent_trial": "expl_28_diou_ctr0_8ep",
+  "no_commit": true,
+  "no_push": true
+}

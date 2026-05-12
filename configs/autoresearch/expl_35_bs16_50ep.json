@@ -1,0 +1,29 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 50,
+  "total_epochs": 50,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-35: Clean 50ep ceiling test. DIoU + MV3-Small + T=5 + 224 + bs=16 + resized_root. Quality mainline extended to 50ep. Core question: does 30ep->50ep yield meaningful gains (>0.005 mIoU)? E-31 reached 0.3111 at 30ep (bs=16, no resized_root). If best > 0.316, extending training is worthwhile. If ~0.311-0.314, architecture is at ceiling — pivot to scheduler or regularization.",
+  "trial_id": "expl_35_bs16_50ep",
+  "parent_trial": "expl_31_diou_30ep",
+  "no_commit": true,
+  "no_push": true
+}

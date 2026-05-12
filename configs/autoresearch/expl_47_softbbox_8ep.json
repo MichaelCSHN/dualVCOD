@@ -1,0 +1,33 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "dense_fg_aux",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 8,
+  "total_epochs": 8,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "weight_decay": 0.0001,
+  "jitter_strength": 0.15,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true,
+    "dense_fg": 0.5
+  },
+  "warmup_epochs": 0,
+  "dense_target_mode": "soft_bbox",
+  "hypothesis": "E-47: Soft bbox extent targets for bbox-only samples (MoCA CSV). Hard rectangles are replaced with 2D Gaussian falloff from bbox center (sigma proportional to bbox dimensions, sigma_factor=0.3, clamped to [1,5] pixels at 28x28). Real PNG masks stay hard binary. Tests whether softer spatial structure from bbox-derived targets helps — Gaussian encodes 'center is definitely foreground, boundaries are uncertain', which may guide the model to learn better extent. Core prediction: softer bbox targets reduce the 'hard edge' artifact and improve large-object IoU. If pf_mIoU > E-45 OR area_ratio closer to 1.0, direction is valid.",
+  "trial_id": "expl_47_softbbox_8ep",
+  "parent_trial": "expl_45_baseline_hard_8ep",
+  "no_commit": true,
+  "no_push": true
+}

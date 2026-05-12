@@ -9,10 +9,12 @@ import os
 import csv
 import json
 import random
+import hashlib
 import cv2
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from torchvision import io as tvio
 from collections import defaultdict
 
 
@@ -81,17 +83,26 @@ class RealVideoBBoxDataset(Dataset):
     """
 
     def __init__(self, dataset_paths, T=5, target_size=224, dataset_names=None, augment=False,
-                 temporal_stride=1):
+                 temporal_stride=1, cache_dir=None, resized_root=None, jitter_strength=0.15,
+                 return_mask=False, bg_mix_prob=0.0, dense_target_mode="hard"):
         self.T = T
         self.target_size = target_size
         self.augment = augment
         self.temporal_stride = temporal_stride
+        self.cache_dir = cache_dir
+        self.resized_root = resized_root
+        self.jitter_strength = jitter_strength
+        self.return_mask = return_mask
+        self.bg_mix_prob = bg_mix_prob
+        self.dense_target_mode = dense_target_mode
+        self._src_roots = []  # list of (source_root, dataset_basename) for path mapping
         self.samples = []  # list of {path, video, start_frame, annot_interval, bbox_map}
 
         if dataset_names is None:
             dataset_names = [f"ds_{i}" for i in range(len(dataset_paths))]
 
         for ds_path, ds_name in zip(dataset_paths, dataset_names):
+            self._src_roots.append((os.path.normpath(ds_path), os.path.basename(ds_path)))
             self._index_dataset(ds_path, ds_name)
 
         if not self.samples:
@@ -270,9 +281,245 @@ class RealVideoBBoxDataset(Dataset):
                             "annot_interval": interval,
                             "bbox_map": bbox_map,
                             "frame_lookup": frame_lookup,
+                            "gt_lookup": gt_lookup,
                             "frame_ext": ".png",
                         }
                     )
+
+    # ── Image cache / resized path ──────────────────────────────────
+
+    def _to_resized_path(self, fpath):
+        """Map a source frame path to its pre-resized JPEG counterpart."""
+        fpath_norm = os.path.normpath(fpath)
+        for src_root, ds_name in self._src_roots:
+            if fpath_norm.startswith(src_root):
+                rel = os.path.relpath(fpath_norm, src_root)
+                stem = os.path.splitext(rel)[0]
+                return os.path.join(self.resized_root, ds_name, stem + ".jpg")
+        return None
+
+    def _cache_path_for(self, frame_path):
+        """Compute cache file path for a given source frame path + target_size."""
+        key = f"{frame_path}_{self.target_size}"
+        h = hashlib.md5(key.encode()).hexdigest()
+        return os.path.join(self.cache_dir, f"{h}.npy")
+
+    def _load_or_decode(self, fpath):
+        """Load frame, preferring pre-resized JPEG when resized_root is set.
+
+        With resized_root: torchvision decode_image → RGB tensor (C,H,W) uint8.
+        Without: cv2 imread → cvtColor BGR2RGB → resize → numpy (H,W,C) uint8.
+        """
+        if fpath is None:
+            if self.resized_root:
+                return torch.zeros(3, self.target_size, self.target_size, dtype=torch.uint8)
+            return np.zeros((self.target_size, self.target_size, 3), dtype=np.uint8)
+
+        # ── Pre-resized path (torchvision, no cvtColor, no resize) ──
+        if self.resized_root is not None:
+            rpath = self._to_resized_path(fpath)
+            if rpath is not None and os.path.exists(rpath):
+                data = tvio.read_file(rpath)
+                img = tvio.decode_image(data)  # (C, H, W) uint8, RGB
+                return img
+            # fall through to cv2 path if resized file missing
+
+        # ── Cache path (.npy) ──
+        if self.cache_dir:
+            cache_path = self._cache_path_for(fpath)
+            if os.path.exists(cache_path):
+                return np.load(cache_path)
+
+        # ── Original cv2 path ──
+        img = cv2.imread(fpath)
+        if img is None:
+            if self.resized_root:
+                return torch.zeros(3, self.target_size, self.target_size, dtype=torch.uint8)
+            return np.zeros((self.target_size, self.target_size, 3), dtype=np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (self.target_size, self.target_size))
+
+        if self.cache_dir:
+            cache_path = self._cache_path_for(fpath)
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            tmp_path = cache_path + ".tmp"
+            np.save(tmp_path, img)
+            try:
+                os.replace(tmp_path, cache_path)  # atomic rename
+            except OSError:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+        return img
+
+    # ── Mask loading (for dense_fg_aux supervision) ─────────────────────
+
+    def _resolve_mask_path(self, sample, frame_idx):
+        """Find GT mask file for a given frame index. Returns None if no mask file."""
+        video_dir = sample.get("video_dir")
+        if video_dir is None:
+            return None  # MoCA CSV — generate from bbox
+
+        # MoCA_Mask: GT/{fi:05d}.png
+        mask_path = os.path.join(video_dir, "GT", f"{frame_idx:05d}.png")
+        if os.path.exists(mask_path):
+            return mask_path
+
+        # CAD: groundtruth/{gt_lookup[fi]}
+        gt_lookup = sample.get("gt_lookup", {})
+        if frame_idx in gt_lookup:
+            mask_path = os.path.join(video_dir, "groundtruth", gt_lookup[frame_idx])
+            if os.path.exists(mask_path):
+                return mask_path
+
+        return None
+
+    def _load_mask(self, sample, frame_idx, bbox_norm):
+        """Load or generate dense targets for a frame.
+
+        dense_target_mode dispatch:
+          "hard"                    — binary mask (real PNG or bbox rectangle)
+          "soft_mask"               — Gaussian blur on real PNG masks; hard bbox fallback
+          "soft_mask_adaptive"      — size-dependent Gaussian blur on real PNG masks
+          "soft_bbox"               — hard real PNG masks; Gaussian falloff from bbox
+          "ce"                      — center+extent 5-ch target (bbox-derived, no PNG needed)
+        """
+        if self.dense_target_mode in ("ce",):
+            return self._make_ce_targets(bbox_norm)
+
+        mask_path = self._resolve_mask_path(sample, frame_idx)
+
+        if mask_path is not None:
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if mask is not None:
+                mask = cv2.resize(mask, (28, 28), interpolation=cv2.INTER_AREA)
+                binary = (mask > 0).astype(np.float32)
+                if self.dense_target_mode in ("soft_mask",):
+                    return self._soften_mask(binary)
+                if self.dense_target_mode in ("soft_mask_adaptive",):
+                    return self._soften_mask_adaptive(binary, bbox_norm)
+                return binary
+
+        # No real mask — generate from bbox (always hard rectangle)
+        return self._bbox_to_mask(bbox_norm, 28, 28)
+
+    @staticmethod
+    def _soften_mask(mask, sigma=1.0):
+        """Gaussian blur on binary mask to soften boundaries.
+
+        sigma=1.0 at 28×28 gives ~3-pixel transition zone at edges.
+        """
+        ksize = max(3, 2 * int(3.0 * sigma) + 1)
+        if ksize % 2 == 0:
+            ksize += 1
+        ksize = min(ksize, 7)  # cap at 7 for 28×28 grid
+        blurred = cv2.GaussianBlur(mask, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
+        blurred = np.maximum(blurred, mask)  # preserve interior at 1.0
+        return np.minimum(blurred, 1.0)
+
+    @staticmethod
+    def _soften_mask_adaptive(mask, bbox):
+        """Size-adaptive Gaussian blur: sigma proportional to object size at 28×28.
+
+        Uses normalized bbox area to select sigma:
+          tiny   (area < 0.01): sigma=0   — hard mask, no blur
+          small  (area < 0.05): sigma=0.5 — gentle boundary softening
+          medium (area < 0.15): sigma=1.0 — moderate softening (≈E-46)
+          large  (area ≥ 0.15): sigma=1.5 — stronger boundary softening for large objects
+
+        Interior pixels are always preserved at 1.0 via np.maximum(blurred, mask).
+        Bbox-only samples never reach this method (hard rectangles used instead).
+        """
+        area = float((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
+        if area < 0.01:
+            return mask  # tiny: hard binary
+        elif area < 0.05:
+            return RealVideoBBoxDataset._soften_mask(mask, sigma=0.5)
+        elif area < 0.15:
+            return RealVideoBBoxDataset._soften_mask(mask, sigma=1.0)
+        else:
+            return RealVideoBBoxDataset._soften_mask(mask, sigma=1.5)
+
+    @staticmethod
+    def _make_ce_targets(bbox, h=28, w=28):
+        """Generate center+extent targets (5, H, W) from normalized bbox.
+
+        Channel 0: Center heatmap — 2D Gaussian peak at bbox center (logit target
+                   for BCEWithLogitsLoss, values in [0, 1]).
+        Channels 1-4: Per-pixel distance to left/right/top/bottom edges, normalized
+                      to [0, 1]. Zero outside bbox; masked out in loss.
+
+        Center Gaussian σ = max(bbox_w, bbox_h) / 4, clamped to [0.5, 4.0] at 28×28.
+        """
+        x1, y1, x2, y2 = bbox
+        # Center coords at 28×28
+        cx = (x1 + x2) / 2.0 * w
+        cy = (y1 + y2) / 2.0 * h
+        bw = max((x2 - x1) * w, 1.0)
+        bh = max((y2 - y1) * h, 1.0)
+        sigma = float(np.clip(max(bw, bh) / 4.0, 0.5, 4.0))
+
+        y, x_coord = np.mgrid[0:h, 0:w]
+        center = np.exp(-((x_coord - cx) ** 2 + (y - cy) ** 2) / (2 * sigma ** 2))
+        center = center.astype(np.float32)
+
+        # Bbox mask for extent supervision
+        ix1 = max(0, int(x1 * w))
+        iy1 = max(0, int(y1 * h))
+        ix2 = min(w, int(np.ceil(x2 * w)))
+        iy2 = min(h, int(np.ceil(y2 * h)))
+        extent_mask = np.zeros((h, w), dtype=np.float32)
+        if ix2 > ix1 and iy2 > iy1:
+            extent_mask[iy1:iy2, ix1:ix2] = 1.0
+
+        # Per-pixel distances to edges (normalized)
+        col = np.arange(w, dtype=np.float32).reshape(1, w)  # (1, w)
+        row = np.arange(h, dtype=np.float32).reshape(h, 1)  # (h, 1)
+
+        left   = np.clip((col - x1 * w) / w, 0, None)  # (1, w)
+        right  = np.clip((x2 * w - col) / w, 0, None)
+        top    = np.clip((row - y1 * h) / h, 0, None)  # (h, 1)
+        bottom = np.clip((y2 * h - row) / h, 0, None)
+
+        left   = np.broadcast_to(left, (h, w))   * extent_mask
+        right  = np.broadcast_to(right, (h, w))  * extent_mask
+        top    = np.broadcast_to(top, (h, w))    * extent_mask
+        bottom = np.broadcast_to(bottom, (h, w)) * extent_mask
+
+        targets = np.stack([center, left, right, top, bottom], axis=0)  # (5, H, W)
+        return targets.astype(np.float32)
+
+    @staticmethod
+    def _bbox_to_gaussian_mask(bbox, h, w, sigma_factor=0.3):
+        """Generate 2D Gaussian falloff from bbox center.
+
+        sigma_x/y proportional to bbox dimensions × sigma_factor.
+        Clamped to [1.0, 5.0] pixels at target resolution.
+        Peak=1.0 at center, falls off toward edges and beyond.
+        """
+        cx = (bbox[0] + bbox[2]) / 2.0 * w
+        cy = (bbox[1] + bbox[3]) / 2.0 * h
+        bw = max((bbox[2] - bbox[0]) * w, 1.0)
+        bh = max((bbox[3] - bbox[1]) * h, 1.0)
+        sigma_x = np.clip(bw * sigma_factor, 1.0, 5.0)
+        sigma_y = np.clip(bh * sigma_factor, 1.0, 5.0)
+
+        y, x = np.mgrid[0:h, 0:w]
+        g = np.exp(-((x - cx) ** 2 / (2 * sigma_x ** 2) + (y - cy) ** 2 / (2 * sigma_y ** 2)))
+        g_max = float(g.max())
+        return (g / g_max).astype(np.float32)
+
+    @staticmethod
+    def _bbox_to_mask(bbox, h, w):
+        """Generate binary mask from normalized bbox [x1,y1,x2,y2]."""
+        x1 = max(0, int(bbox[0] * w))
+        y1 = max(0, int(bbox[1] * h))
+        x2 = min(w, int(np.ceil(bbox[2] * w)))
+        y2 = min(h, int(np.ceil(bbox[3] * h)))
+        mask = np.zeros((h, w), dtype=np.float32)
+        if x2 > x1 and y2 > y1:
+            mask[y1:y2, x1:x2] = 1.0
+        return mask
 
     # ── Item access ───────────────────────────────────────────────────
 
@@ -330,41 +577,130 @@ class RealVideoBBoxDataset(Dataset):
         # ── Spatial augmentation params (consistent across clip) ──
         do_flip = self.augment and random.random() < 0.5
         if self.augment:
-            jitter_brightness = 1.0 + random.uniform(-0.15, 0.15)
-            jitter_contrast = 1.0 + random.uniform(-0.15, 0.15)
-            jitter_saturation = 1.0 + random.uniform(-0.15, 0.15)
+            s = self.jitter_strength
+            jitter_brightness = 1.0 + random.uniform(-s, s)
+            jitter_contrast = 1.0 + random.uniform(-s, s)
+            jitter_saturation = 1.0 + random.uniform(-s, s)
+
+        # ── Background mixing (E-42): shared bg for temporal consistency ──
+        do_bg_mix = (
+            self.augment and self.bg_mix_prob > 0
+            and random.random() < self.bg_mix_prob
+        )
+        bg_frame = None
+        if do_bg_mix:
+            exclude_dir = sample.get("frame_dir", "")
+            bg_frame = self._pick_background(exclude_dir)
 
         frames = []
         bboxes = []
+        masks = [] if self.return_mask else None
         for fi in frame_indices:
             fpath = self._resolve_frame_path(sample, fi)
+            img = self._load_or_decode(fpath)
 
-            img = cv2.imread(fpath) if fpath is not None else np.zeros(
-                (self.target_size, self.target_size, 3), dtype=np.uint8
-            )
-            if img is None:
-                img = np.zeros((self.target_size, self.target_size, 3), dtype=np.uint8)
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = cv2.resize(img, (self.target_size, self.target_size))
+            bbox_before_flip = sample["bbox_map"].get(
+                fi, np.array([0, 0, 1, 1], dtype=np.float32)
+            ).copy()
 
-            bbox = sample["bbox_map"].get(fi, np.array([0, 0, 1, 1], dtype=np.float32))
+            # ── Convert to float tensor (C, H, W) ──────────────────
+            if isinstance(img, torch.Tensor):
+                img_t = img.float() / 255.0
+            else:
+                img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
 
-            # ── Apply spatial augmentations ────────────────────────
-            img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0  # (C, H, W)
+            # ── Background mixing: replace background before flip/jitter ──
+            if bg_frame is not None:
+                full_mask = self._load_full_mask(sample, fi, bbox_before_flip)
+                if full_mask.sum() > 0 and full_mask.sum() < full_mask.size:
+                    img_t = self._composite_frame(img_t, full_mask, bg_frame)
+                # else: mask empty or full-frame → skip compositing
 
+            # ── Horizontal flip ────────────────────────────────────
+            bbox = bbox_before_flip.copy()
             if do_flip:
-                img_t = torch.flip(img_t, dims=[-1])  # horizontal flip
-                bbox = np.array([1.0 - bbox[2], bbox[1], 1.0 - bbox[0], bbox[3]], dtype=np.float32)
+                img_t = torch.flip(img_t, dims=[-1])
+                bbox = np.array(
+                    [1.0 - bbox[2], bbox[1], 1.0 - bbox[0], bbox[3]],
+                    dtype=np.float32,
+                )
 
+            # ── Color jitter ────────────────────────────────────────
             if self.augment:
-                img_t = self._color_jitter(img_t, jitter_brightness, jitter_contrast, jitter_saturation)
+                img_t = self._color_jitter(
+                    img_t, jitter_brightness, jitter_contrast, jitter_saturation
+                )
+
+            # ── Dense mask (28×28 for dense_fg supervision) ─────────
+            if self.return_mask:
+                mask = self._load_mask(sample, fi, bbox)
+                if do_flip and self.dense_target_mode not in ("ce",):
+                    mask = np.fliplr(mask).copy()
+                masks.append(torch.from_numpy(mask))
 
             frames.append(img_t)
             bboxes.append(torch.from_numpy(bbox))
 
         frames = torch.stack(frames, dim=0)  # (T, C, H, W)
         bboxes = torch.stack(bboxes, dim=0)  # (T, 4)
+        if self.return_mask:
+            masks = torch.stack(masks, dim=0)  # (T, 28, 28)
+            return frames, bboxes, masks
         return frames, bboxes
+
+    # ── Background mixing (E-42: camouflage-aware augmentation) ──────────
+
+    def _load_full_mask(self, sample, frame_idx, bbox_norm):
+        """Load binary mask at target_size resolution for compositing.
+
+        Real masks (MoCA_Mask/CAD) loaded from PNG → target_size.
+        Bbox-only samples fall back to rectangle mask.
+        """
+        mask_path = self._resolve_mask_path(sample, frame_idx)
+        if mask_path is not None:
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if mask is not None:
+                mask = cv2.resize(mask, (self.target_size, self.target_size),
+                                  interpolation=cv2.INTER_AREA)
+                return (mask > 0).astype(np.float32)
+        return self._bbox_to_mask(bbox_norm, self.target_size, self.target_size)
+
+    def _pick_background(self, exclude_dir):
+        """Pick a random frame from a different video as compositing background.
+
+        Returns float tensor (3, H, W) in [0,1], or None on failure.
+        """
+        for _ in range(50):
+            bg_sample = random.choice(self.samples)
+            if bg_sample.get("frame_dir", "") == exclude_dir:
+                continue
+            bg_fi = bg_sample["start_frame"]
+            fpath = self._resolve_frame_path(bg_sample, bg_fi)
+            if fpath is None:
+                continue
+            img = self._load_or_decode(fpath)
+            if img is None:
+                continue
+            if isinstance(img, torch.Tensor):
+                return img.float() / 255.0
+            else:
+                img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+                return img_t
+        return None
+
+    @staticmethod
+    def _composite_frame(frame, mask, background):
+        """Composite foreground (where mask==1) onto background.
+
+        Args:
+            frame: (C, H, W) float tensor in [0,1]
+            mask: (H, W) float32 numpy, 1=foreground, 0=background
+            background: (C, H, W) float tensor in [0,1]
+
+        Returns composited (C, H, W) float tensor.
+        """
+        mask_t = torch.from_numpy(mask).float().unsqueeze(0)  # (1, H, W)
+        return frame * mask_t + background * (1.0 - mask_t)
 
     @staticmethod
     def _color_jitter(img, brightness, contrast, saturation):
@@ -380,3 +716,8 @@ class RealVideoBBoxDataset(Dataset):
 def collate_video_clips(batch):
     frames, bboxes = zip(*batch)
     return torch.stack(frames, dim=0), torch.stack(bboxes, dim=0)
+
+
+def collate_video_clips_with_masks(batch):
+    frames, bboxes, masks = zip(*batch)
+    return torch.stack(frames, dim=0), torch.stack(bboxes, dim=0), torch.stack(masks, dim=0)

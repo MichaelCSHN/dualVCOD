@@ -64,3 +64,16 @@ reports/paper_assets/
 *.mp4
 *.avi
 *.mov
+
+# Claude Code internal
+.claude/
+
+# Test / debug artifacts
+deepseek_test_body.json
+
+# Emergency checkpoints (redundant with *.pth / *.pt)
+emergency_ckpt.pt
+*_emergency.pt
+
+# Reeval JSON outputs (large, reproducible via scripts)
+local_runs/reeval_*.json

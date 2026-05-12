@@ -1,0 +1,28 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 8,
+  "total_epochs": 8,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "Quality verification B: pre-resized 224 JPEG via torchvision decode_image. bs=16, nw=2, DIoU, MV3-Small, T=5, 224, 8ep. Compare best mIoU against _qual_orig_bs16_8ep. Expected: within ±0.005 of original pipeline (~0.289).",
+  "trial_id": "_qual_resized_bs16_8ep",
+  "no_commit": true,
+  "no_push": true
+}

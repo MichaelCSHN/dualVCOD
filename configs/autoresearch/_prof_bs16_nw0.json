@@ -1,0 +1,26 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 1,
+  "total_epochs": 1,
+  "train_seed": 42,
+  "num_workers": 0,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "Profiling: batch_size=16, num_workers=0. 1-epoch baseline for DataLoader bottleneck measurement.",
+  "trial_id": "_prof_bs16_nw0",
+  "started_at": "2026-05-11T01:00:00"
+}

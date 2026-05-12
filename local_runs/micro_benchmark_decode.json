@@ -1,0 +1,47 @@
+{
+  "1_current_imread_cvt_resize": {
+    "total_time_s": 60.301,
+    "frames": 10000,
+    "frames_per_s": 165.8,
+    "ms_per_frame": 6.03,
+    "has_decode": true,
+    "has_resize": true,
+    "has_bgr2rgb": true
+  },
+  "2_imread_resize_no_cvt": {
+    "total_time_s": 49.552,
+    "frames": 10000,
+    "frames_per_s": 201.8,
+    "ms_per_frame": 4.955,
+    "has_decode": true,
+    "has_resize": true,
+    "has_bgr2rgb": false
+  },
+  "3_preresized_imread_only": {
+    "total_time_s": 47.648,
+    "frames": 10000,
+    "frames_per_s": 209.9,
+    "ms_per_frame": 4.765,
+    "has_decode": true,
+    "has_resize": false,
+    "has_bgr2rgb": false
+  },
+  "4_torchvision_full_decode_resize": {
+    "total_time_s": 63.664,
+    "frames": 10000,
+    "frames_per_s": 157.1,
+    "ms_per_frame": 6.366,
+    "has_decode": true,
+    "has_resize": true,
+    "has_bgr2rgb": false
+  },
+  "5_torchvision_preresized_decode_only": {
+    "total_time_s": 33.916,
+    "frames": 10000,
+    "frames_per_s": 294.8,
+    "ms_per_frame": 3.392,
+    "has_decode": true,
+    "has_resize": false,
+    "has_bgr2rgb": false
+  }
+}

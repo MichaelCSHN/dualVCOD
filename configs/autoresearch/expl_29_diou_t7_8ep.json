@@ -1,0 +1,27 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 7,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 48,
+  "train_batch_size": 48,
+  "eval_batch_size": 64,
+  "epochs": 8,
+  "total_epochs": 8,
+  "train_seed": 42,
+  "num_workers": 4,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-29: DIoU + center=0.0 + T=7 + 8ep probe. Best loss (DIoU only, 0.2893 from E-28) × best architecture (T=7, +0.020 from E-22 vs E-18). E-28 (DIoU) and E-22 (T=7) improve through different mechanisms — DIoU via better center/IoU gradient, T=7 via richer temporal signal for motion-based camouflage disambiguation. These should be additive. If mIoU > 0.308, superposition confirmed → promote to 30ep. If < 0.290, the gains are non-additive (diminishing returns). 8ep probe with canonical train_batch=16. eval_batch=64 for speed.",
+  "trial_id": "expl_29_diou_t7_8ep",
+  "parent_trial": "expl_28_diou_ctr0_8ep",
+  "started_at": "2026-05-10T19:30:00"
+}

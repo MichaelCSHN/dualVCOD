@@ -1,0 +1,27 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 2,
+  "total_epochs": 2,
+  "train_seed": 42,
+  "num_workers": 4,
+  "cache_dir": "D:/dualvcod/data/cache/frames",
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "Cache test: bs=16, nw=4 with pre-decoded frame cache. Compare data_time and total epoch time vs _prof_bs16_nw4 (no cache). Cache stores uint8 RGB numpy arrays at target_size, eliminating cv2.imread + BGR2RGB + resize per access.",
+  "trial_id": "_cache_bs16_nw4",
+  "started_at": "2026-05-11T01:30:00"
+}

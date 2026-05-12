@@ -1,0 +1,14 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 0.735227,
+    "train_miou": 0.3775,
+    "val_miou": 0.2253,
+    "val_recall_at_0_5": 0.1118,
+    "lr": 0.0,
+    "time_s": 417.6,
+    "mean_batch_s": 0.166,
+    "max_batch_s": 1.415,
+    "n_batches": 279
+  }
+]

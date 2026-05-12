@@ -1,0 +1,27 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 48,
+  "train_batch_size": 48,
+  "eval_batch_size": 64,
+  "epochs": 3,
+  "total_epochs": 3,
+  "train_seed": 42,
+  "num_workers": 4,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "NVMe profiling: bs=48, nw=4, 1 epoch. Compare data_time and total epoch time against HDD baseline (_speedtest_bs48_nw4, 211s/epoch). Dataset now on C:\\datasets (NVMe SSD).",
+  "trial_id": "_nvme_prof_bs48_nw4",
+  "no_commit": true,
+  "no_push": true
+}

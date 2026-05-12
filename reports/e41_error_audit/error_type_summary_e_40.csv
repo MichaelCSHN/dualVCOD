@@ -1,0 +1,10 @@
+error_type,count,pct
+center_shift,5,0.1
+good,5742,96.4
+pred_too_large,1,0.0
+pred_too_small,120,2.0
+scale_mismatch,87,1.5
+size_large,2655,44.6
+size_medium,2717,45.6
+size_small,259,4.3
+size_tiny,324,5.4

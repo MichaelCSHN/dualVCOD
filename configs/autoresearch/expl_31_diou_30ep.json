@@ -1,0 +1,27 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 30,
+  "total_epochs": 30,
+  "train_seed": 42,
+  "num_workers": 2,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-31: DIoU + center=0.0 + T=5 + 30ep canonical confirmation. E-28 proved DIoU alone (0.2893) beats GIoU+center=0.2 (E-18, 0.2807) at 8ep by +0.0086. Hypothesis: at 30ep, DIoU alone exceeds E-21's 0.3126 and becomes the new mother baseline. DIoU's built-in center-distance penalty should maintain localization quality without the redundant center loss, and the simpler loss surface may reduce overfitting at longer schedules. train_batch=16 kept canonical for comparability with E-21. eval_batch=64 for faster validation (2x E-28's eval_batch). If successful: DIoU replaces GIoU+center=0.2 as default loss for all future trials.",
+  "trial_id": "expl_31_diou_30ep",
+  "parent_trial": "expl_28_diou_ctr0_8ep",
+  "started_at": "2026-05-10T19:30:00"
+}

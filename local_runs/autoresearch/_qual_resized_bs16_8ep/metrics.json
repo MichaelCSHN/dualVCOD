@@ -1,0 +1,98 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 0.751518,
+    "train_miou": 0.3662,
+    "val_miou": 0.2463,
+    "val_recall_at_0_5": 0.1727,
+    "lr": 0.00096194,
+    "time_s": 218.0,
+    "mean_batch_s": 0.116,
+    "max_batch_s": 1.428,
+    "n_batches": 558
+  },
+  {
+    "epoch": 2,
+    "train_loss": 0.562642,
+    "train_miou": 0.5054,
+    "val_miou": 0.2462,
+    "val_recall_at_0_5": 0.1535,
+    "lr": 0.00085355,
+    "time_s": 222.0,
+    "mean_batch_s": 0.111,
+    "max_batch_s": 0.372,
+    "n_batches": 558
+  },
+  {
+    "epoch": 3,
+    "train_loss": 0.474872,
+    "train_miou": 0.5769,
+    "val_miou": 0.242,
+    "val_recall_at_0_5": 0.121,
+    "lr": 0.00069134,
+    "time_s": 225.9,
+    "mean_batch_s": 0.107,
+    "max_batch_s": 0.297,
+    "n_batches": 558
+  },
+  {
+    "epoch": 4,
+    "train_loss": 0.419155,
+    "train_miou": 0.6253,
+    "val_miou": 0.2687,
+    "val_recall_at_0_5": 0.1722,
+    "lr": 0.0005,
+    "time_s": 216.5,
+    "mean_batch_s": 0.104,
+    "max_batch_s": 0.369,
+    "n_batches": 558
+  },
+  {
+    "epoch": 5,
+    "train_loss": 0.370368,
+    "train_miou": 0.669,
+    "val_miou": 0.2708,
+    "val_recall_at_0_5": 0.1832,
+    "lr": 0.00030866,
+    "time_s": 217.0,
+    "mean_batch_s": 0.102,
+    "max_batch_s": 0.365,
+    "n_batches": 558
+  },
+  {
+    "epoch": 6,
+    "train_loss": 0.326208,
+    "train_miou": 0.7094,
+    "val_miou": 0.2829,
+    "val_recall_at_0_5": 0.1944,
+    "lr": 0.00014645,
+    "time_s": 217.8,
+    "mean_batch_s": 0.104,
+    "max_batch_s": 0.335,
+    "n_batches": 558
+  },
+  {
+    "epoch": 7,
+    "train_loss": 0.293536,
+    "train_miou": 0.7401,
+    "val_miou": 0.2841,
+    "val_recall_at_0_5": 0.1805,
+    "lr": 3.806e-05,
+    "time_s": 219.3,
+    "mean_batch_s": 0.102,
+    "max_batch_s": 0.261,
+    "n_batches": 558
+  },
+  {
+    "epoch": 8,
+    "train_loss": 0.273757,
+    "train_miou": 0.7586,
+    "val_miou": 0.2901,
+    "val_recall_at_0_5": 0.1906,
+    "lr": 0.0,
+    "time_s": 217.3,
+    "mean_batch_s": 0.106,
+    "max_batch_s": 0.342,
+    "n_batches": 558
+  }
+]

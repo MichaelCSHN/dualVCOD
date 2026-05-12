@@ -1,0 +1,16 @@
+{
+  "trial_id": "smoke_b0_baseline_proxy",
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "sampler": "window_uniform",
+  "lr": 0.001,
+  "head": "current_direct_bbox",
+  "epochs": 3,
+  "total_epochs": 30,
+  "batch_size": 24,
+  "num_workers": 4,
+  "_note_train_seed": "B0 intentionally omits train_seed to match train.py non-deterministic behavior",
+  "split_seed": 42,
+  "hypothesis": "B0 baseline proxy: verify run_trial.py reproduces train.py metrics identically. Same backbone, same T, same sz, same sampler, same head, same LR."
+}

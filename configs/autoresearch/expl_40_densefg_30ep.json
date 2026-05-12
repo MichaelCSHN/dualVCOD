@@ -1,0 +1,32 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "dense_fg_aux",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 30,
+  "total_epochs": 30,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "weight_decay": 0.0001,
+  "jitter_strength": 0.15,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true,
+    "dense_fg": 0.5
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-40: dense_fg_aux 30ep canonical. E-39 proved dense foreground auxiliary supervision delivers +0.020 mIoU at 8ep (0.3096 vs E-28 0.2893), nearly matching E-31 30ep DIoU (0.3111) in 1/3.75 the epochs. Core question: does this gain persist at 30ep and exceed E-31? If best_val_mIoU >= 0.33, dense_fg becomes default training strategy. No new variables — same config as E-39, only epochs changed to 30.",
+  "trial_id": "expl_40_densefg_30ep",
+  "parent_trial": "expl_39_densefg_8ep",
+  "no_commit": true,
+  "no_push": true
+}

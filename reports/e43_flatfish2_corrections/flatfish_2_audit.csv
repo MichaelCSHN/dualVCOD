@@ -1,0 +1,17 @@
+frame_id,original_bbox_x1,original_bbox_y1,original_bbox_x2,original_bbox_y2,gt_area,e31_iou,e31_center_err,e31_err_type,e40_iou,e40_center_err,e40_err_type,annotation_quality
+00000,0.4302,0.0022,0.7779,0.6159,0.2134,0.1321,0.3922,center_shift,0.0171,0.4853,pred_too_small,GT_LIKELY_LOOSE
+00005,0.4057,0.0034,0.7786,0.6237,0.2313,0.0503,0.3948,pred_too_small,0.0,0.4896,pred_too_small,GT_LIKELY_LOOSE
+00010,0.3875,0.002,0.7529,0.6673,0.2432,0.0924,0.2907,pred_too_small,0.0,0.5021,pred_too_small,GT_LIKELY_LOOSE
+00015,0.3765,0.0039,0.7441,0.7123,0.2605,0.0876,0.3373,pred_too_small,0.0,0.5037,pred_too_small,GT_LIKELY_LOOSE
+00020,0.3798,0.0215,0.7067,0.7436,0.2361,0.13,0.2909,pred_too_small,0.1145,0.3538,pred_too_small,GT_LIKELY_LOOSE
+00025,0.3809,0.0352,0.6924,0.7554,0.2243,0.1046,0.3082,pred_too_small,0.1346,0.3001,pred_too_small,GT_LIKELY_LOOSE
+00030,0.3633,0.0587,0.6957,0.7691,0.2362,0.1529,0.1143,pred_too_small,0.3066,0.087,pred_too_small,GT_REASONABLE
+00035,0.36,0.0724,0.6869,0.7906,0.2348,0.1667,0.1436,pred_too_small,0.3435,0.1184,pred_too_small,GT_LIKELY_LOOSE
+00040,0.3732,0.0861,0.6825,0.7906,0.2179,0.1487,0.1843,pred_too_small,0.2342,0.1656,pred_too_small,GT_LIKELY_LOOSE
+00045,0.3688,0.09,0.6869,0.7886,0.2223,0.1442,0.189,pred_too_small,0.4186,0.1478,pred_too_small,GT_LIKELY_LOOSE
+00050,0.3688,0.0959,0.6902,0.775,0.2183,0.1057,0.2049,pred_too_small,0.3557,0.1411,pred_too_small,GT_LIKELY_LOOSE
+00055,0.3721,0.0939,0.6814,0.7847,0.2137,0.1146,0.2229,pred_too_small,0.3629,0.1568,center_shift,GT_LIKELY_LOOSE
+00060,0.3908,0.1037,0.6759,0.7613,0.1875,0.1173,0.1826,pred_too_small,0.4008,0.1435,pred_too_small,GT_LIKELY_LOOSE
+00065,0.3842,0.0861,0.6869,0.7495,0.2008,0.1105,0.2138,pred_too_small,0.3,0.1781,pred_too_small,GT_LIKELY_LOOSE
+00070,0.3941,0.0724,0.7034,0.7358,0.2052,0.1322,0.1866,pred_too_small,0.1976,0.2218,pred_too_small,GT_LIKELY_LOOSE
+00075,0.4161,0.0783,0.7342,0.7221,0.2048,0.1006,0.2154,pred_too_small,0.1217,0.2802,pred_too_small,GT_LIKELY_LOOSE

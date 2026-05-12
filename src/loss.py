@@ -12,7 +12,7 @@ import torch.nn.functional as F
 def box_giou(pred, gt):
     """Generalized IoU for boxes in (x1, y1, x2, y2) format.
 
-    GIoU = IoU - |C \ (A ∪ B)| / |C|  where C is the smallest enclosing box.
+    GIoU = IoU - |C \\ (A ∪ B)| / |C|  where C is the smallest enclosing box.
     Ranges from -1 (worst) to 1 (best).
 
     Args:
@@ -96,6 +96,62 @@ def box_diou(pred, gt):
     return diou
 
 
+def box_ciou(pred, gt):
+    """Complete IoU for boxes in (x1, y1, x2, y2) format.
+
+    CIoU = IoU - ρ²/c² - αv  where v is aspect ratio consistency
+    and α is a trade-off parameter (detached, per the original paper).
+    Ranges from -1 (worst) to 1 (best).
+
+    Args:
+        pred: (..., 4) tensor
+        gt:   (..., 4) tensor
+    Returns:
+        ciou: (...,) tensor in [-1, 1]
+    """
+    # Intersection & IoU
+    ix1 = torch.max(pred[..., 0], gt[..., 0])
+    iy1 = torch.max(pred[..., 1], gt[..., 1])
+    ix2 = torch.min(pred[..., 2], gt[..., 2])
+    iy2 = torch.min(pred[..., 3], gt[..., 3])
+    inter = (ix2 - ix1).clamp(min=0) * (iy2 - iy1).clamp(min=0)
+
+    area_pred = (pred[..., 2] - pred[..., 0]).clamp(min=0) * (
+        pred[..., 3] - pred[..., 1]
+    ).clamp(min=0)
+    area_gt = (gt[..., 2] - gt[..., 0]).clamp(min=0) * (
+        gt[..., 3] - gt[..., 1]
+    ).clamp(min=0)
+    union = area_pred + area_gt - inter
+    iou = inter / (union + 1e-6)
+
+    # Center distance penalty (same as DIoU)
+    cx_pred = (pred[..., 0] + pred[..., 2]) / 2.0
+    cy_pred = (pred[..., 1] + pred[..., 3]) / 2.0
+    cx_gt = (gt[..., 0] + gt[..., 2]) / 2.0
+    cy_gt = (gt[..., 1] + gt[..., 3]) / 2.0
+    rho2 = (cx_pred - cx_gt) ** 2 + (cy_pred - cy_gt) ** 2
+
+    ex1 = torch.min(pred[..., 0], gt[..., 0])
+    ey1 = torch.min(pred[..., 1], gt[..., 1])
+    ex2 = torch.max(pred[..., 2], gt[..., 2])
+    ey2 = torch.max(pred[..., 3], gt[..., 3])
+    c2 = (ex2 - ex1).clamp(min=0) ** 2 + (ey2 - ey1).clamp(min=0) ** 2
+
+    # Aspect ratio penalty
+    eps = 1e-6
+    w_pred = (pred[..., 2] - pred[..., 0]).clamp(min=eps)
+    h_pred = (pred[..., 3] - pred[..., 1]).clamp(min=eps)
+    w_gt = (gt[..., 2] - gt[..., 0]).clamp(min=eps)
+    h_gt = (gt[..., 3] - gt[..., 1]).clamp(min=eps)
+    v = (4.0 / (torch.pi ** 2)) * (torch.atan(w_gt / h_gt) - torch.atan(w_pred / h_pred)) ** 2
+    with torch.no_grad():
+        alpha = v / (1.0 - iou + v + eps)
+
+    ciou = iou - rho2 / (c2 + eps) - alpha * v
+    return ciou
+
+
 class BBoxLoss(nn.Module):
     """Composite BBox loss for camouflaged object detection.
 
@@ -113,16 +169,20 @@ class BBoxLoss(nn.Module):
     """
 
     def __init__(self, smooth_l1_weight=1.0, giou_weight=1.0, use_diou=False,
-                 center_weight=0.0, log_wh_weight=0.0, objectness_weight=0.0):
+                 use_ciou=False, center_weight=0.0, log_wh_weight=0.0,
+                 objectness_weight=0.0, dense_fg_weight=0.0, dense_ce_weight=0.0):
         super().__init__()
         self.smooth_l1_weight = smooth_l1_weight
         self.giou_weight = giou_weight
         self.use_diou = use_diou
+        self.use_ciou = use_ciou
         self.center_weight = center_weight
         self.log_wh_weight = log_wh_weight
         self.objectness_weight = objectness_weight
+        self.dense_fg_weight = dense_fg_weight
+        self.dense_ce_weight = dense_ce_weight
 
-    def forward(self, pred, gt):
+    def forward(self, pred, gt, gt_masks=None):
         """Compute composite loss.
 
         Args:
@@ -135,12 +195,29 @@ class BBoxLoss(nn.Module):
                             [+ center_loss, objectness_loss, objectness_acc]
         """
         obj_pred = None
-        if isinstance(pred, tuple):
-            pred, obj_pred = pred
+        dense_fg = None
+        dense_ce = None
+        if isinstance(pred, (tuple, list)):
+            if len(pred) == 3:
+                pred, obj_pred, third = pred
+                if isinstance(third, (tuple, list)):
+                    dense_ce = third
+                else:
+                    dense_fg = third
+            elif len(pred) == 2:
+                if isinstance(pred[1], (tuple, list)):
+                    dense_ce = pred[1]
+                elif pred[1].ndim == 4:
+                    dense_fg = pred[1]
+                else:
+                    obj_pred = pred[1]
+                pred = pred[0]
 
         l1 = F.smooth_l1_loss(pred, gt, beta=0.1)
 
-        if self.use_diou:
+        if self.use_ciou:
+            iou_metric = box_ciou(pred, gt)
+        elif self.use_diou:
             iou_metric = box_diou(pred, gt)
         else:
             iou_metric = box_giou(pred, gt)
@@ -187,6 +264,62 @@ class BBoxLoss(nn.Module):
             obj_acc = ((torch.sigmoid(obj_pred) > 0.5).float() == gt_obj).float().mean()
             result["objectness_loss"] = obj_loss.detach()
             result["objectness_acc"] = obj_acc.detach()
+
+        # Dense foreground auxiliary loss (BCE on 28×28 logits)
+        if dense_fg is not None and self.dense_fg_weight > 0 and gt_masks is not None:
+            dense_masks = gt_masks.to(dense_fg.device)  # (B, T, 28, 28)
+            B, T = dense_masks.shape[:2]
+            dense_fg_2d = dense_fg.reshape(B * T, 1, dense_fg.shape[-2], dense_fg.shape[-1])
+            dense_masks_2d = dense_masks.reshape(B * T, 1, dense_masks.shape[-2], dense_masks.shape[-1])
+            # pos_weight to counter foreground sparsity (fg ~2-5% of pixels)
+            n_pos = dense_masks_2d.sum() + 1
+            n_neg = dense_masks_2d.numel() - n_pos
+            pos_weight = (n_neg / n_pos).clamp(1.0, 50.0)
+            fg_loss = F.binary_cross_entropy_with_logits(
+                dense_fg_2d, dense_masks_2d, pos_weight=pos_weight
+            )
+            total = total + self.dense_fg_weight * fg_loss
+            fg_acc = ((torch.sigmoid(dense_fg_2d) > 0.5).float() == dense_masks_2d).float().mean()
+            result["dense_fg_loss"] = fg_loss.detach()
+            result["dense_fg_acc"] = fg_acc.detach()
+
+        # Center+Extent auxiliary loss
+        if dense_ce is not None and self.dense_ce_weight > 0 and gt_masks is not None:
+            center_pred, extent_pred = dense_ce  # (B*T, 1, H, W), (B*T, 4, H, W)
+            gt_ce = gt_masks.to(center_pred.device)  # (B, T, 5, H, W)
+            B, T = gt_ce.shape[:2]
+            H, W = gt_ce.shape[-2:]
+
+            # Center BCE loss
+            gt_center = gt_ce[:, :, 0:1]  # (B, T, 1, H, W)
+            center_2d = center_pred.reshape(B * T, 1, H, W)
+            gt_center_2d = gt_center.reshape(B * T, 1, H, W)
+            n_pos = gt_center_2d.sum() + 1
+            n_neg = gt_center_2d.numel() - n_pos
+            pos_w = (n_neg / n_pos).clamp(1.0, 50.0)
+            center_loss = F.binary_cross_entropy_with_logits(
+                center_2d, gt_center_2d, pos_weight=pos_w
+            )
+            center_acc = ((torch.sigmoid(center_2d) > 0.5).float() ==
+                          (gt_center_2d > 0.5).float()).float().mean()
+
+            # Extent SmoothL1 loss (bbox interior only)
+            gt_extent = gt_ce[:, :, 1:]  # (B, T, 4, H, W)
+            extent_2d = extent_pred.reshape(B * T, 4, H, W)
+            gt_extent_2d = gt_extent.reshape(B * T, 4, H, W)
+
+            # Mask: any pixel inside bbox (any distance channel > 0)
+            extent_mask = (gt_extent_2d > 0).any(dim=1, keepdim=True).float()  # (B*T, 1, H, W)
+            n_extent_px = extent_mask.sum() + 1
+            extent_loss = (F.smooth_l1_loss(extent_2d, gt_extent_2d, reduction='none')
+                           * extent_mask.expand(-1, 4, -1, -1)).sum() / n_extent_px
+
+            ce_loss = center_loss + extent_loss
+            total = total + self.dense_ce_weight * ce_loss
+            result["dense_ce_loss"] = ce_loss.detach()
+            result["dense_ce_center_loss"] = center_loss.detach()
+            result["dense_ce_extent_loss"] = extent_loss.detach()
+            result["dense_ce_center_acc"] = center_acc.detach()
 
         result["loss"] = total
 

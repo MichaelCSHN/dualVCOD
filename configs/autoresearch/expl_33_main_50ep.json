@@ -1,0 +1,28 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 48,
+  "train_batch_size": 48,
+  "eval_batch_size": 64,
+  "epochs": 50,
+  "total_epochs": 50,
+  "train_seed": 42,
+  "num_workers": 4,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-33: Main-line ceiling test. DIoU + MV3-Small + T=5 + 224 + 50ep. Goal: determine if 30ep→50ep yields meaningful gains, or if the lightweight config has plateaued. E-31 reached 0.3111 at 30ep (bs=16/nw=2). If 50ep > 0.318, extend training is worthwhile. If 50ep ≈ 0.311-0.314, we are at the ceiling for this architecture and should pivot to scheduler or backbone improvements.",
+  "trial_id": "expl_33_main_50ep",
+  "parent_trial": "expl_31_diou_30ep",
+  "no_commit": true,
+  "no_push": true
+}

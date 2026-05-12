@@ -1,0 +1,27 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 48,
+  "train_batch_size": 48,
+  "eval_batch_size": 64,
+  "epochs": 8,
+  "total_epochs": 8,
+  "train_seed": 42,
+  "num_workers": 4,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_ciou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-32: CIoU + center=0.0 + T=5 + 8ep cheap probe. CIoU = DIoU + aspect ratio consistency penalty (α*v term). Camouflaged animals often have non-square bounding boxes (elongated shapes, partial occlusion). CIoU's aspect ratio penalty may help the model predict more accurate box shapes. Hypothesis: if CIoU's α*v term provides useful shape signal beyond DIoU's center penalty, mIoU > E-28 (0.2893). If mIoU ≈ E-28, aspect ratio penalty adds no value for this data. If successful (mIoU > 0.295), test CIoU + T=7 and/or 30ep. Cost: ~40min, 8ep probe.",
+  "trial_id": "expl_32_ciou_8ep",
+  "parent_trial": "expl_28_diou_ctr0_8ep",
+  "started_at": "2026-05-10T19:30:00"
+}

@@ -1,0 +1,28 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 1,
+  "total_epochs": 1,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "Pipeline profiling B: pre-resized 224 JPEG via torchvision decode_image (RGB output, no cvtColor, no resize). bs=16, nw=2. Compare data_time against _pipeprof_orig_bs16.",
+  "trial_id": "_pipeprof_resized_bs16",
+  "no_commit": true,
+  "no_push": true
+}

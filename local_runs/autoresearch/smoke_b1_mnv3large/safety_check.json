@@ -1,0 +1,14 @@
+{
+  "trial_directory": [],
+  "backbone": [],
+  "input_size": [],
+  "temporal_t": [],
+  "sampler": [],
+  "head": [],
+  "lr": [],
+  "param_budget": [],
+  "no_checkpoint": [],
+  "seed_consistency": [],
+  "phase_compatibility": [],
+  "data_isolation": []
+}

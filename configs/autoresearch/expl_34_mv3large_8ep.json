@@ -1,0 +1,28 @@
+{
+  "backbone": "mobilenet_v3_large",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "batch_size": 48,
+  "train_batch_size": 48,
+  "eval_batch_size": 64,
+  "epochs": 8,
+  "total_epochs": 8,
+  "train_seed": 42,
+  "num_workers": 4,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-34: MV3-Large cheap probe. DIoU + MV3-Large + T=5 + 224 + 8ep. E-23 tested MV3-Large with GIoU+center=0.2 and got 0.2840 (vs MV3-Small 0.2807, +0.0033 marginal). Hypothesis: DIoU's better gradients may unlock more from the larger backbone. If mIoU > E-28 (0.2893), MV3-Large is worth promoting to 30ep. If mIoU <= 0.2893, MV3-Large adds no value and we stay with Small.",
+  "trial_id": "expl_34_mv3large_8ep",
+  "parent_trial": "expl_28_diou_ctr0_8ep",
+  "no_commit": true,
+  "no_push": true
+}

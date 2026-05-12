@@ -228,6 +228,67 @@ class SpatialEncoderFPN(nn.Module):
         return p2  # (B, 128, H/8, W/8)
 
 
+class DenseForegroundHead(nn.Module):
+    """Dense foreground predictor on FPN features — auxiliary mask supervision.
+
+    2-conv head: 128→64→1, outputs stride-8 foreground logits (28×28 for
+    224 input). Trained with BCE loss against downsampled GT masks (from
+    MoCA_Mask/CAD PNG or bbox-generated rectangles for MoCA CSV).
+
+    Used only during training; deployment is bbox-only.
+    """
+
+    def __init__(self, in_channels=128):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 1, 1),
+        )
+
+    def forward(self, feat):
+        # feat: (B*T, C, H, W) — per-frame FPN features, pre-temporal
+        return self.conv(feat)  # (B*T, 1, H, W)
+
+
+class CenterExtentHead(nn.Module):
+    """Center+Extent dense head — decomposes foreground into center heatmap
+    and per-pixel edge distances.
+
+    Shared encoder (128→32), then splits into:
+      - Center branch (32→1→Sigmoid): 28×28 heatmap, BCE against Gaussian peak
+      - Extent branch (32→4→ReLU): l/r/t/b distance maps, SmoothL1 supervision
+
+    The center heatmap tells the backbone "where is the object center?" and
+    the extent maps tell "how far to each edge from this pixel?" — structural
+    decomposition that provides richer spatial supervision than a binary mask.
+
+    Used only during training; deployment is bbox-only.
+    """
+
+    def __init__(self, in_channels=128):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+        )
+        self.center_conv = nn.Sequential(
+            nn.Conv2d(32, 1, 1),
+        )
+        self.extent_conv = nn.Sequential(
+            nn.Conv2d(32, 4, 1),
+            nn.ReLU(),
+        )
+
+    def forward(self, feat):
+        x = self.encoder(feat)         # (B*T, 32, H, W)
+        center = self.center_conv(x)   # (B*T, 1, H, W)
+        extent = self.extent_conv(x)   # (B*T, 4, H, W)
+        return center, extent
+
+
 class ObjectnessHead(nn.Module):
     """Predicts per-frame objectness score — auxiliary supervision.
 
@@ -278,6 +339,8 @@ class MicroVCOD(nn.Module):
         self.temporal_neck = TemporalNeighborhood(T=T, channels=128)
         self.bbox_head = BBoxHead(in_channels=128)
         self.objectness_head = ObjectnessHead(in_channels=128) if head_type == "objectness_aux_head" else None
+        self.dense_fg_head = DenseForegroundHead(in_channels=128) if head_type == "dense_fg_aux" else None
+        self.dense_ce_head = CenterExtentHead(in_channels=128) if head_type == "dense_ce_aux" else None
 
     def forward(self, x):
         B, T, C, H, W = x.shape
@@ -285,14 +348,31 @@ class MicroVCOD(nn.Module):
         x = x.reshape(B * T, C, H, W)
         feat = self.spatial_encoder(x)
         _, Cf, Hf, Wf = feat.shape
-        feat = feat.reshape(B, T, Cf, Hf, Wf)
 
+        # Dense FG / CE on per-frame features BEFORE temporal mixing
+        dense_fg = None
+        dense_ce = None
+        if self.dense_fg_head is not None and self.training:
+            dense_fg = self.dense_fg_head(feat)  # (B*T, 1, Hf, Wf)
+        if self.dense_ce_head is not None and self.training:
+            dense_ce = self.dense_ce_head(feat)  # (center, extent) each (B*T, *, Hf, Wf)
+
+        feat = feat.reshape(B, T, Cf, Hf, Wf)
         feat = self.temporal_neck(feat)
 
         bbox = self.bbox_head(feat)
 
         if self.objectness_head is not None and self.training:
             obj = self.objectness_head(feat)
+            if dense_fg is not None:
+                return bbox, obj, dense_fg
+            if dense_ce is not None:
+                return bbox, obj, dense_ce
             return bbox, obj
+
+        if dense_fg is not None:
+            return bbox, dense_fg
+        if dense_ce is not None:
+            return bbox, dense_ce
 
         return bbox

@@ -1,0 +1,9 @@
+{
+  "trial_id": "expl_06_highres640",
+  "status": "failed",
+  "reason": "RuntimeError: CUDA error: an illegal memory access was encountered\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\nCompile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.\n",
+  "started_at": "2026-05-08T05:49:38.140275",
+  "finished_at": "2026-05-08T06:40:35.991131",
+  "no_commit": true,
+  "no_push": true
+}

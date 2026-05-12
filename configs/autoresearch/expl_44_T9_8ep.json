@@ -1,0 +1,32 @@
+{
+  "backbone": "mobilenet_v3_small",
+  "input_size": 224,
+  "temporal_T": 9,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "dense_fg_aux",
+  "lr": 0.001,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 8,
+  "total_epochs": 8,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "weight_decay": 0.0001,
+  "jitter_strength": 0.15,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true,
+    "dense_fg": 0.5
+  },
+  "warmup_epochs": 0,
+  "hypothesis": "E-44: T=9 temporal probe. E-43 proved flatfish_2 failure is genuine hard camouflage (not label noise) — model detects presence but cannot delineate full extent of large well-camouflaged objects. Hypothesis: longer temporal context (9 frames vs 5, spanning 40 frames at 5-frame intervals) gives model more boundary evidence to accumulate, improving spatial delineation of large static camouflaged objects. All other params identical to E-39 (dense_fg_aux, lr=0.001, bs=16, 8ep, T_max=8). Eval criteria: flatfish_2 per-video mIoU improvement (primary), overall pf_mIoU stable or improved (secondary). If pf_mIoU > E-39 (0.8277) OR flatfish_2 mIoU > E-40 (0.215), direction is valid for 30ep verification.",
+  "trial_id": "expl_44_T9_8ep",
+  "parent_trial": "expl_39_densefg_8ep",
+  "no_commit": true,
+  "no_push": true
+}

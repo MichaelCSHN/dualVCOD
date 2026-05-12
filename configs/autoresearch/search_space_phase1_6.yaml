@@ -39,10 +39,10 @@ meta:
 fixed_protocol:
   # Data isolation
   train_datasets:
-    - "D:\\ML\\COD_datasets\\MoCA"
-    - "D:\\ML\\COD_datasets\\MoCA_Mask"
-    - "D:\\ML\\COD_datasets\\CamouflagedAnimalDataset"
-  val_dataset: "D:\\ML\\COD_datasets\\MoCA"
+    - "C:\\datasets\\MoCA"
+    - "C:\\datasets\\MoCA_Mask"
+    - "C:\\datasets\\CamouflagedAnimalDataset"
+  val_dataset: "C:\\datasets\\MoCA"
   val_ratio: 0.2
   split_seed: 42
   canonical_video_id_filter: true

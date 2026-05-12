@@ -1,0 +1,16 @@
+{
+  "trial_id": "smoke_b1_effb0",
+  "backbone": "efficientnet_b0",
+  "input_size": 512,
+  "temporal_T": 5,
+  "sampler": "window_uniform",
+  "head": "current_direct_bbox",
+  "lr": 0.001,
+  "epochs": 5,
+  "total_epochs": 30,
+  "batch_size": 12,
+  "num_workers": 4,
+  "train_seed": 42,
+  "split_seed": 42,
+  "hypothesis": "B1 backbone smoke: efficientnet_b0 at 512px. Minimal upgrade — stronger backbone than mv3_small, expect modest mIoU gain."
+}

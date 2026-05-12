@@ -1,0 +1,33 @@
+{
+  "backbone": "efficientnet_b0",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "dense_fg_aux",
+  "lr": 0.0003,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 8,
+  "total_epochs": 8,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "weight_decay": 0.0001,
+  "jitter_strength": 0.15,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true,
+    "dense_fg": 0.5
+  },
+  "warmup_epochs": 3,
+  "dense_target_mode": "hard",
+  "hypothesis": "E-51: Backbone capacity probe — MV3-Small (1.4M) → EfficientNet-B0 (4.6M). EfficientNet uses compound-scaled MBConv blocks with SE modules — architecturally different from MobileNetV3. Prior NaN at lr=1e-3 (E-24, smoke_b1) resolved at lr=1e-4 (E-03). Here lr=3e-4 + 3ep warmup seeks the stability/learning-rate frontier. Core question: does a different CNN architecture family benefit more from dense_fg_aux supervision than MobileNetV3? If pf_mIoU > E-45 (0.8281), EfficientNet's SE-module feature quality may interact positively with dense spatial supervision. If NaN or pf_mIoU < 0.75, EfficientNet architecture is unstable under dense supervision even at reduced LR.",
+  "trial_id": "expl_51_effb0_densefg_8ep",
+  "parent_trial": "expl_45_baseline_hard_8ep",
+  "no_commit": true,
+  "no_push": true
+}

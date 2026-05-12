@@ -110,37 +110,42 @@ BACKBONE_REGISTRY = {
     "mobilenet_v3_large": {
         "factory": _mobilenet_v3_large_features,
         "input_size_range": [224, 640],
-        # MV3-Large features module: [0]Conv2d, [1-3]bottleneck blocks, [4-6]bottleneck, [7-15]bottleneck + final conv
-        # Slice: s8=[:4], s16=[4:7], s32=[7:]
-        "stage_slices": [(0, 4), (4, 7), (7, None)],
-        "stage_channels": [24, 40, 960],       # probed 2026-05-07
+        # MV3-Large features: [0]ConvBnAct(s=2), [1]IR(s=1), [2]IR(s=2→s4), [3]IR(s=1),
+        #   [4]IR(s=2→s8), [5-6]IR(s=1), [7]IR(s=2→s16), [8-12]IR(s=1),
+        #   [13]IR(s=2→s32), [14-15]IR(s=1), [16]ConvBnAct(s=1)
+        # Corrected 2026-05-13: old (0,4) stopped at stride 4 → 56×56, breaking dense_fg_aux
+        "stage_slices": [(0, 5), (5, 13), (13, None)],  # s8, s16, s32
+        "stage_channels": [40, 112, 960],     # re-probed at corrected slices
         "fpn_out_channels": 128,
         "total_params_estimate": "~3.5M",
     },
     # ── EfficientNet family ──────────────────────────────────────────
+    # All EfficientNet variants share identical 9-layer features structure:
+    #   [0]Conv(s=2)→112², [1]MBConv(s=1)→112², [2]MBConv(s=2)→56²,
+    #   [3]MBConv(s=2)→28², [4]MBConv(s=2)→14², [5]MBConv(s=1)→14²,
+    #   [6]MBConv(s=2)→7², [7]MBConv(s=1)→7², [8]Conv(s=1)→7²
+    # Corrected 2026-05-13: old (0,3) stopped at stride 4 → 56×56, breaking dense_fg_aux
     "efficientnet_b0": {
         "factory": _efficientnet_b0_features,
         "input_size_range": [224, 640],
-        # EfficientNet features: [0]Conv2d, [1-2]MBConv blocks staged at stride boundaries
-        # stride 8 ≈ features[:3], stride 16 ≈ features[3:5], stride 32 ≈ features[5:]
-        "stage_slices": [(0, 3), (3, 5), (5, None)],
-        "stage_channels": [24, 80, 1280],    # probed 2026-05-07
+        "stage_slices": [(0, 4), (4, 6), (6, None)],  # s8, s16, s32
+        "stage_channels": [40, 112, 1280],  # re-probed at corrected slices
         "fpn_out_channels": 128,
         "total_params_estimate": "~4.6M",
     },
     "efficientnet_b1": {
         "factory": _efficientnet_b1_features,
         "input_size_range": [224, 640],
-        "stage_slices": [(0, 3), (3, 5), (5, None)],
-        "stage_channels": [24, 80, 1280],    # probed 2026-05-07
+        "stage_slices": [(0, 4), (4, 6), (6, None)],
+        "stage_channels": [40, 112, 1280],  # re-probed at corrected slices
         "fpn_out_channels": 128,
         "total_params_estimate": "~7.1M",
     },
     "efficientnet_b2": {
         "factory": _efficientnet_b2_features,
         "input_size_range": [224, 640],
-        "stage_slices": [(0, 3), (3, 5), (5, None)],
-        "stage_channels": [48, 120, 352],
+        "stage_slices": [(0, 4), (4, 6), (6, None)],
+        "stage_channels": [48, 120, 1408],  # re-probed at corrected slices
         "fpn_out_channels": 128,
         "total_params_estimate": "~7.7M (backbone) + head -> ~9.1M total",
     },

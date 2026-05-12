@@ -1,0 +1,12 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 0.736848,
+    "train_miou": 0.3824,
+    "val_miou": 0.2477,
+    "val_recall_at_0_5": 0.1525,
+    "eval_T": 5,
+    "lr": 9.973e-05,
+    "time_s": 892.5
+  }
+]
