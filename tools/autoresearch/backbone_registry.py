@@ -132,6 +132,10 @@ BACKBONE_REGISTRY = {
         "stage_channels": [40, 112, 1280],  # re-probed at corrected slices
         "fpn_out_channels": 128,
         "total_params_estimate": "~4.6M",
+        # Multi-scale: stride-4 features for 56×56 dense supervision
+        # features[0:3] = Conv(s=2→112²) + MBConv(s=1→112²) + MBConv(s=2→56²) → 24ch
+        "stage_slice_s4": [0, 3],
+        "stage_channel_s4": 24,
     },
     "efficientnet_b1": {
         "factory": _efficientnet_b1_features,

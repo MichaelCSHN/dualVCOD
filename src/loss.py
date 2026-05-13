@@ -170,7 +170,8 @@ class BBoxLoss(nn.Module):
 
     def __init__(self, smooth_l1_weight=1.0, giou_weight=1.0, use_diou=False,
                  use_ciou=False, center_weight=0.0, log_wh_weight=0.0,
-                 objectness_weight=0.0, dense_fg_weight=0.0, dense_ce_weight=0.0):
+                 objectness_weight=0.0, dense_fg_weight=0.0, dense_ce_weight=0.0,
+                 dense_fg_s4_weight=0.0):
         super().__init__()
         self.smooth_l1_weight = smooth_l1_weight
         self.giou_weight = giou_weight
@@ -181,6 +182,7 @@ class BBoxLoss(nn.Module):
         self.objectness_weight = objectness_weight
         self.dense_fg_weight = dense_fg_weight
         self.dense_ce_weight = dense_ce_weight
+        self.dense_fg_s4_weight = dense_fg_s4_weight
 
     def forward(self, pred, gt, gt_masks=None):
         """Compute composite loss.
@@ -196,22 +198,33 @@ class BBoxLoss(nn.Module):
         """
         obj_pred = None
         dense_fg = None
+        dense_fg_s4 = None
         dense_ce = None
         if isinstance(pred, (tuple, list)):
-            if len(pred) == 3:
+            n = len(pred)
+            if n >= 2 and isinstance(pred[1], (tuple, list)):
+                # (bbox, (center, extent), ...)
+                dense_ce = pred[1]
+                pred = pred[0]
+            elif n == 3 and pred[1].ndim == 4:
+                # (bbox, dense_fg_s4, dense_fg_s8)
+                pred, dense_fg_s4, dense_fg = pred
+            elif n == 4:
+                # (bbox, obj, dense_fg_s4, dense_fg_s8)
+                pred, obj_pred, dense_fg_s4, dense_fg = pred
+            elif n == 3:
+                # (bbox, obj, dense_fg) or (bbox, obj, dense_ce)
                 pred, obj_pred, third = pred
                 if isinstance(third, (tuple, list)):
                     dense_ce = third
                 else:
                     dense_fg = third
-            elif len(pred) == 2:
-                if isinstance(pred[1], (tuple, list)):
-                    dense_ce = pred[1]
-                elif pred[1].ndim == 4:
-                    dense_fg = pred[1]
-                else:
-                    obj_pred = pred[1]
-                pred = pred[0]
+            elif n == 2 and pred[1].ndim == 4:
+                # (bbox, dense_fg) — single-scale
+                pred, dense_fg = pred
+            elif n == 2:
+                # (bbox, obj)
+                pred, obj_pred = pred
 
         l1 = F.smooth_l1_loss(pred, gt, beta=0.1)
 
@@ -265,23 +278,45 @@ class BBoxLoss(nn.Module):
             result["objectness_loss"] = obj_loss.detach()
             result["objectness_acc"] = obj_acc.detach()
 
-        # Dense foreground auxiliary loss (BCE on 28×28 logits)
+        # Dense foreground auxiliary loss (BCE on 28×28 logits — s8)
         if dense_fg is not None and self.dense_fg_weight > 0 and gt_masks is not None:
-            dense_masks = gt_masks.to(dense_fg.device)  # (B, T, 28, 28)
-            B, T = dense_masks.shape[:2]
+            masks_s8 = gt_masks if not isinstance(gt_masks, (tuple, list)) else gt_masks[1]
+            masks_s8 = masks_s8.to(dense_fg.device)  # (B, T, 28, 28)
+            B, T = masks_s8.shape[:2]
             dense_fg_2d = dense_fg.reshape(B * T, 1, dense_fg.shape[-2], dense_fg.shape[-1])
-            dense_masks_2d = dense_masks.reshape(B * T, 1, dense_masks.shape[-2], dense_masks.shape[-1])
-            # pos_weight to counter foreground sparsity (fg ~2-5% of pixels)
-            n_pos = dense_masks_2d.sum() + 1
-            n_neg = dense_masks_2d.numel() - n_pos
+            masks_s8_2d = masks_s8.reshape(B * T, 1, masks_s8.shape[-2], masks_s8.shape[-1])
+            n_pos = masks_s8_2d.sum() + 1
+            n_neg = masks_s8_2d.numel() - n_pos
             pos_weight = (n_neg / n_pos).clamp(1.0, 50.0)
             fg_loss = F.binary_cross_entropy_with_logits(
-                dense_fg_2d, dense_masks_2d, pos_weight=pos_weight
+                dense_fg_2d, masks_s8_2d, pos_weight=pos_weight
             )
             total = total + self.dense_fg_weight * fg_loss
-            fg_acc = ((torch.sigmoid(dense_fg_2d) > 0.5).float() == dense_masks_2d).float().mean()
+            fg_acc = ((torch.sigmoid(dense_fg_2d) > 0.5).float() == masks_s8_2d).float().mean()
             result["dense_fg_loss"] = fg_loss.detach()
             result["dense_fg_acc"] = fg_acc.detach()
+
+        # Dense foreground auxiliary loss — s4 (BCE on 56×56 logits)
+        if dense_fg_s4 is not None and self.dense_fg_s4_weight > 0 and gt_masks is not None:
+            masks_s4 = gt_masks if not isinstance(gt_masks, (tuple, list)) else gt_masks[0]
+            masks_s4 = masks_s4.to(dense_fg_s4.device)  # (B, T, 56, 56)
+            B, T = masks_s4.shape[:2]
+            dense_s4_2d = dense_fg_s4.reshape(B * T, 1, dense_fg_s4.shape[-2], dense_fg_s4.shape[-1])
+            masks_s4_2d = masks_s4.reshape(B * T, 1, masks_s4.shape[-2], masks_s4.shape[-1])
+            n_pos = masks_s4_2d.sum() + 1
+            n_neg = masks_s4_2d.numel() - n_pos
+            pos_weight = (n_neg / n_pos).clamp(1.0, 50.0)
+            fg_s4_loss = F.binary_cross_entropy_with_logits(
+                dense_s4_2d, masks_s4_2d, pos_weight=pos_weight
+            )
+            total = total + self.dense_fg_s4_weight * fg_s4_loss
+            fg_s4_acc = ((torch.sigmoid(dense_s4_2d) > 0.5).float() == masks_s4_2d).float().mean()
+            result["dense_fg_s4_loss"] = fg_s4_loss.detach()
+            result["dense_fg_s4_acc"] = fg_s4_acc.detach()
+            if "dense_fg_loss" in result:
+                total_dense = fg_s4_loss + result["dense_fg_loss"]
+                result["s4_loss_ratio"] = (fg_s4_loss / (total_dense + 1e-8)).detach()
+                result["s8_loss_ratio"] = (result["dense_fg_loss"] / (total_dense + 1e-8)).detach()
 
         # Center+Extent auxiliary loss
         if dense_ce is not None and self.dense_ce_weight > 0 and gt_masks is not None:

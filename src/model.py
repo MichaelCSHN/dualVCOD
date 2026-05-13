@@ -131,9 +131,10 @@ class SpatialEncoderFPN(nn.Module):
     For 224×224 input the output is (128, 28, 28).
     """
 
-    def __init__(self, backbone_name="mobilenet_v3_small", pretrained=True):
+    def __init__(self, backbone_name="mobilenet_v3_small", pretrained=True, use_s4=False):
         super().__init__()
         self._backbone_name = backbone_name
+        self._use_s4 = use_s4
 
         if backbone_name == "mobilenet_v3_small":
             self._init_mobilenet_v3_small(pretrained)
@@ -145,6 +146,11 @@ class SpatialEncoderFPN(nn.Module):
     # ── baseline code path (preserved exactly for B0 compatibility) ─────
 
     def _init_mobilenet_v3_small(self, pretrained):
+        if self._use_s4:
+            raise ValueError(
+                "use_s4=True is not supported for mobilenet_v3_small. "
+                "Use efficientnet_b0 or add s4 config to the registry."
+            )
         backbone = torchvision.models.mobilenet_v3_small(
             weights=(
                 torchvision.models.MobileNet_V3_Small_Weights.IMAGENET1K_V1
@@ -189,25 +195,54 @@ class SpatialEncoderFPN(nn.Module):
 
         backbone = factory(pretrained=pretrained)
 
-        self.stage2 = backbone[slices[0][0]:slices[0][1]]
-        self.stage3 = backbone[slices[1][0]:slices[1][1]]
-        self.stage4 = backbone[slices[2][0]:slices[2][1]]
+        if self._use_s4:
+            s4_slices = cfg.get("stage_slice_s4")
+            s4_channel = cfg.get("stage_channel_s4")
+            if s4_slices is None or s4_channel is None:
+                raise ValueError(
+                    f"Backbone '{backbone_name}' does not support use_s4=True "
+                    f"(missing stage_slice_s4 / stage_channel_s4 in registry)"
+                )
 
-        channels = self._probe_channels()
-        self._stage_channels = channels
+            self.stage1_s4 = backbone[s4_slices[0]:s4_slices[1]]
+            self.stage2 = backbone[s4_slices[1]:slices[0][1]]
+            self.stage3 = backbone[slices[1][0]:slices[1][1]]
+            self.stage4 = backbone[slices[2][0]:slices[2][1]]
 
-        self.lat4 = nn.Conv2d(channels[2], 128, 1)
-        self.lat3 = nn.Conv2d(channels[1], 128, 1)
-        self.lat2 = nn.Conv2d(channels[0], 128, 1)
-        self.smooth3 = nn.Conv2d(128, 128, 3, padding=1)
-        self.smooth2 = nn.Conv2d(128, 128, 3, padding=1)
+            channels = self._probe_channels()
 
-        for m in [self.lat4, self.lat3, self.lat2]:
-            nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            self.lat1 = nn.Conv2d(s4_channel, 128, 1)
+            self.lat2 = nn.Conv2d(channels[0], 128, 1)
+            self.lat3 = nn.Conv2d(channels[1], 128, 1)
+            self.lat4 = nn.Conv2d(channels[2], 128, 1)
+            self.smooth1 = nn.Conv2d(128, 128, 3, padding=1)
+            self.smooth2 = nn.Conv2d(128, 128, 3, padding=1)
+            self.smooth3 = nn.Conv2d(128, 128, 3, padding=1)
+
+            for m in [self.lat1, self.lat2, self.lat3, self.lat4]:
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+        else:
+            self.stage2 = backbone[slices[0][0]:slices[0][1]]
+            self.stage3 = backbone[slices[1][0]:slices[1][1]]
+            self.stage4 = backbone[slices[2][0]:slices[2][1]]
+
+            channels = self._probe_channels()
+            self._stage_channels = channels
+
+            self.lat4 = nn.Conv2d(channels[2], 128, 1)
+            self.lat3 = nn.Conv2d(channels[1], 128, 1)
+            self.lat2 = nn.Conv2d(channels[0], 128, 1)
+            self.smooth3 = nn.Conv2d(128, 128, 3, padding=1)
+            self.smooth2 = nn.Conv2d(128, 128, 3, padding=1)
+
+            for m in [self.lat4, self.lat3, self.lat2]:
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
 
     def _probe_channels(self):
         dummy = torch.randn(1, 3, 224, 224)
         x = dummy
+        if self._use_s4:
+            x = self.stage1_s4(x)
         channels = []
         for stage in [self.stage2, self.stage3, self.stage4]:
             x = stage(x)
@@ -215,6 +250,22 @@ class SpatialEncoderFPN(nn.Module):
         return channels
 
     def forward(self, x):
+        if self._use_s4:
+            c1 = self.stage1_s4(x)
+            c2 = self.stage2(c1)
+            c3 = self.stage3(c2)
+            c4 = self.stage4(c3)
+
+            p4 = self.lat4(c4)
+            p3 = self.lat3(c3) + F.interpolate(p4, size=c3.shape[-2:], mode="bilinear", align_corners=False)
+            p3 = self.smooth3(p3)
+            p2 = self.lat2(c2) + F.interpolate(p3, size=c2.shape[-2:], mode="bilinear", align_corners=False)
+            p2 = self.smooth2(p2)
+            p1 = self.lat1(c1) + F.interpolate(p2, size=c1.shape[-2:], mode="bilinear", align_corners=False)
+            p1 = self.smooth1(p1)
+
+            return {"p1": p1, "p2": p2}
+
         c2 = self.stage2(x)
         c3 = self.stage3(c2)
         c4 = self.stage4(c3)
@@ -335,11 +386,15 @@ class MicroVCOD(nn.Module):
         self.T = T
         self._backbone_name = backbone_name
         self._head_type = head_type
-        self.spatial_encoder = SpatialEncoderFPN(backbone_name=backbone_name, pretrained=pretrained_backbone)
+        _use_s4 = head_type == "dense_fg_aux_ms"
+        self.spatial_encoder = SpatialEncoderFPN(
+            backbone_name=backbone_name, pretrained=pretrained_backbone, use_s4=_use_s4
+        )
         self.temporal_neck = TemporalNeighborhood(T=T, channels=128)
         self.bbox_head = BBoxHead(in_channels=128)
         self.objectness_head = ObjectnessHead(in_channels=128) if head_type == "objectness_aux_head" else None
-        self.dense_fg_head = DenseForegroundHead(in_channels=128) if head_type == "dense_fg_aux" else None
+        self.dense_fg_head = DenseForegroundHead(in_channels=128) if head_type in ("dense_fg_aux", "dense_fg_aux_ms") else None
+        self.dense_fg_head_s4 = DenseForegroundHead(in_channels=128) if head_type == "dense_fg_aux_ms" else None
         self.dense_ce_head = CenterExtentHead(in_channels=128) if head_type == "dense_ce_aux" else None
 
     def forward(self, x):
@@ -347,16 +402,24 @@ class MicroVCOD(nn.Module):
 
         x = x.reshape(B * T, C, H, W)
         feat = self.spatial_encoder(x)
-        _, Cf, Hf, Wf = feat.shape
 
-        # Dense FG / CE on per-frame features BEFORE temporal mixing
         dense_fg = None
+        dense_fg_s4 = None
         dense_ce = None
-        if self.dense_fg_head is not None and self.training:
-            dense_fg = self.dense_fg_head(feat)  # (B*T, 1, Hf, Wf)
-        if self.dense_ce_head is not None and self.training:
-            dense_ce = self.dense_ce_head(feat)  # (center, extent) each (B*T, *, Hf, Wf)
 
+        if self._head_type == "dense_fg_aux_ms":
+            p1, p2 = feat["p1"], feat["p2"]
+            if self.training:
+                dense_fg_s4 = self.dense_fg_head_s4(p1)  # (B*T, 1, 56, 56)
+                dense_fg = self.dense_fg_head(p2)          # (B*T, 1, 28, 28)
+            feat = p2
+        else:
+            if self.dense_fg_head is not None and self.training:
+                dense_fg = self.dense_fg_head(feat)
+            if self.dense_ce_head is not None and self.training:
+                dense_ce = self.dense_ce_head(feat)
+
+        _, Cf, Hf, Wf = feat.shape
         feat = feat.reshape(B, T, Cf, Hf, Wf)
         feat = self.temporal_neck(feat)
 
@@ -364,12 +427,16 @@ class MicroVCOD(nn.Module):
 
         if self.objectness_head is not None and self.training:
             obj = self.objectness_head(feat)
+            if dense_fg_s4 is not None:
+                return bbox, obj, dense_fg_s4, dense_fg
             if dense_fg is not None:
                 return bbox, obj, dense_fg
             if dense_ce is not None:
                 return bbox, obj, dense_ce
             return bbox, obj
 
+        if dense_fg_s4 is not None:
+            return bbox, dense_fg_s4, dense_fg
         if dense_fg is not None:
             return bbox, dense_fg
         if dense_ce is not None:

@@ -84,7 +84,8 @@ class RealVideoBBoxDataset(Dataset):
 
     def __init__(self, dataset_paths, T=5, target_size=224, dataset_names=None, augment=False,
                  temporal_stride=1, cache_dir=None, resized_root=None, jitter_strength=0.15,
-                 return_mask=False, bg_mix_prob=0.0, dense_target_mode="hard"):
+                 return_mask=False, bg_mix_prob=0.0, dense_target_mode="hard",
+                 mask_hw_s4=None):
         self.T = T
         self.target_size = target_size
         self.augment = augment
@@ -95,6 +96,7 @@ class RealVideoBBoxDataset(Dataset):
         self.return_mask = return_mask
         self.bg_mix_prob = bg_mix_prob
         self.dense_target_mode = dense_target_mode
+        self.mask_hw_s4 = mask_hw_s4
         self._src_roots = []  # list of (source_root, dataset_basename) for path mapping
         self.samples = []  # list of {path, video, start_frame, annot_interval, bbox_map}
 
@@ -374,8 +376,8 @@ class RealVideoBBoxDataset(Dataset):
 
         return None
 
-    def _load_mask(self, sample, frame_idx, bbox_norm):
-        """Load or generate dense targets for a frame.
+    def _load_mask(self, sample, frame_idx, bbox_norm, hw=28):
+        """Load or generate dense targets for a frame at hw×hw resolution.
 
         dense_target_mode dispatch:
           "hard"                    — binary mask (real PNG or bbox rectangle)
@@ -385,6 +387,8 @@ class RealVideoBBoxDataset(Dataset):
           "ce"                      — center+extent 5-ch target (bbox-derived, no PNG needed)
         """
         if self.dense_target_mode in ("ce",):
+            if hw != 28:
+                raise NotImplementedError("CE targets only supported at hw=28")
             return self._make_ce_targets(bbox_norm)
 
         mask_path = self._resolve_mask_path(sample, frame_idx)
@@ -392,19 +396,19 @@ class RealVideoBBoxDataset(Dataset):
         if mask_path is not None:
             mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
             if mask is not None:
-                mask = cv2.resize(mask, (28, 28), interpolation=cv2.INTER_AREA)
+                mask = cv2.resize(mask, (hw, hw), interpolation=cv2.INTER_AREA)
                 binary = (mask > 0).astype(np.float32)
                 if self.dense_target_mode in ("soft_mask",):
-                    return self._soften_mask(binary)
+                    return self._soften_mask(binary, hw=hw)
                 if self.dense_target_mode in ("soft_mask_adaptive",):
-                    return self._soften_mask_adaptive(binary, bbox_norm)
+                    return self._soften_mask_adaptive(binary, bbox_norm, hw=hw)
                 return binary
 
         # No real mask — generate from bbox (always hard rectangle)
-        return self._bbox_to_mask(bbox_norm, 28, 28)
+        return self._bbox_to_mask(bbox_norm, hw, hw)
 
     @staticmethod
-    def _soften_mask(mask, sigma=1.0):
+    def _soften_mask(mask, sigma=1.0, hw=28):
         """Gaussian blur on binary mask to soften boundaries.
 
         sigma=1.0 at 28×28 gives ~3-pixel transition zone at edges.
@@ -412,13 +416,13 @@ class RealVideoBBoxDataset(Dataset):
         ksize = max(3, 2 * int(3.0 * sigma) + 1)
         if ksize % 2 == 0:
             ksize += 1
-        ksize = min(ksize, 7)  # cap at 7 for 28×28 grid
+        ksize = min(ksize, 15)  # raised from 7 for 56×56 support
         blurred = cv2.GaussianBlur(mask, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
         blurred = np.maximum(blurred, mask)  # preserve interior at 1.0
         return np.minimum(blurred, 1.0)
 
     @staticmethod
-    def _soften_mask_adaptive(mask, bbox):
+    def _soften_mask_adaptive(mask, bbox, hw=28):
         """Size-adaptive Gaussian blur: sigma proportional to object size at 28×28.
 
         Uses normalized bbox area to select sigma:
@@ -434,11 +438,11 @@ class RealVideoBBoxDataset(Dataset):
         if area < 0.01:
             return mask  # tiny: hard binary
         elif area < 0.05:
-            return RealVideoBBoxDataset._soften_mask(mask, sigma=0.5)
+            return RealVideoBBoxDataset._soften_mask(mask, sigma=0.5, hw=hw)
         elif area < 0.15:
-            return RealVideoBBoxDataset._soften_mask(mask, sigma=1.0)
+            return RealVideoBBoxDataset._soften_mask(mask, sigma=1.0, hw=hw)
         else:
-            return RealVideoBBoxDataset._soften_mask(mask, sigma=1.5)
+            return RealVideoBBoxDataset._soften_mask(mask, sigma=1.5, hw=hw)
 
     @staticmethod
     def _make_ce_targets(bbox, h=28, w=28):
@@ -594,7 +598,8 @@ class RealVideoBBoxDataset(Dataset):
 
         frames = []
         bboxes = []
-        masks = [] if self.return_mask else None
+        masks_s8 = [] if self.return_mask else None
+        masks_s4 = [] if self.mask_hw_s4 is not None else None
         for fi in frame_indices:
             fpath = self._resolve_frame_path(sample, fi)
             img = self._load_or_decode(fpath)
@@ -631,21 +636,31 @@ class RealVideoBBoxDataset(Dataset):
                     img_t, jitter_brightness, jitter_contrast, jitter_saturation
                 )
 
-            # ── Dense mask (28×28 for dense_fg supervision) ─────────
+            # ── Dense masks ─────────────────────────────────────────
             if self.return_mask:
-                mask = self._load_mask(sample, fi, bbox)
+                mask_s8 = self._load_mask(sample, fi, bbox, hw=28)
                 if do_flip and self.dense_target_mode not in ("ce",):
-                    mask = np.fliplr(mask).copy()
-                masks.append(torch.from_numpy(mask))
+                    mask_s8 = np.fliplr(mask_s8).copy()
+                masks_s8.append(torch.from_numpy(mask_s8))
+
+            if self.mask_hw_s4 is not None:
+                mask_s4 = self._load_mask(sample, fi, bbox, hw=self.mask_hw_s4)
+                if do_flip and self.dense_target_mode not in ("ce",):
+                    mask_s4 = np.fliplr(mask_s4).copy()
+                masks_s4.append(torch.from_numpy(mask_s4))
 
             frames.append(img_t)
             bboxes.append(torch.from_numpy(bbox))
 
         frames = torch.stack(frames, dim=0)  # (T, C, H, W)
         bboxes = torch.stack(bboxes, dim=0)  # (T, 4)
+        if masks_s4 is not None:
+            masks_s4 = torch.stack(masks_s4, dim=0)  # (T, 56, 56)
+            masks_s8 = torch.stack(masks_s8, dim=0)  # (T, 28, 28)
+            return frames, bboxes, masks_s4, masks_s8
         if self.return_mask:
-            masks = torch.stack(masks, dim=0)  # (T, 28, 28)
-            return frames, bboxes, masks
+            masks_s8 = torch.stack(masks_s8, dim=0)  # (T, 28, 28)
+            return frames, bboxes, masks_s8
         return frames, bboxes
 
     # ── Background mixing (E-42: camouflage-aware augmentation) ──────────
@@ -721,3 +736,14 @@ def collate_video_clips(batch):
 def collate_video_clips_with_masks(batch):
     frames, bboxes, masks = zip(*batch)
     return torch.stack(frames, dim=0), torch.stack(bboxes, dim=0), torch.stack(masks, dim=0)
+
+
+def collate_video_clips_ms(batch):
+    """Collate multi-scale: (frames, bboxes, masks_s4, masks_s8)."""
+    frames, bboxes, masks_s4, masks_s8 = zip(*batch)
+    return (
+        torch.stack(frames, dim=0),
+        torch.stack(bboxes, dim=0),
+        torch.stack(masks_s4, dim=0),
+        torch.stack(masks_s8, dim=0),
+    )

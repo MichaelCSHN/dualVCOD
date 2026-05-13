@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, Subset, ConcatDataset
 cv2.setNumThreads(0)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from src.dataset_real import RealVideoBBoxDataset, collate_video_clips, collate_video_clips_with_masks
+from src.dataset_real import RealVideoBBoxDataset, collate_video_clips, collate_video_clips_with_masks, collate_video_clips_ms
 from src.model import MicroVCOD
 from src.loss import BBoxLoss
 from eval.eval_video_bbox import compute_metrics, compute_per_frame_metrics, count_parameters, bbox_iou
@@ -190,13 +190,14 @@ def main():
     log("\n[1/5] Building DataLoaders ...")
     t0 = time.time()
 
-    return_mask = (head_type in ("dense_fg_aux", "dense_ce_aux"))
+    return_mask = (head_type in ("dense_fg_aux", "dense_ce_aux", "dense_fg_aux_ms"))
+    mask_hw_s4 = 56 if head_type == "dense_fg_aux_ms" else None
     moca_split_ds = RealVideoBBoxDataset(
         [DEFAULT_TRAIN_DATASETS[0]], T=temporal_T_train, target_size=input_size,
         augment=False, temporal_stride=temporal_stride, cache_dir=cache_dir,
         resized_root=resized_root, jitter_strength=jitter_strength,
         return_mask=return_mask, bg_mix_prob=bg_mix_prob,
-        dense_target_mode=dense_target_mode,
+        dense_target_mode=dense_target_mode, mask_hw_s4=mask_hw_s4,
     )
     log(f"  MoCA split dataset: {len(moca_split_ds)} samples")
 
@@ -217,7 +218,8 @@ def main():
                                   cache_dir=cache_dir, resized_root=resized_root,
                                   jitter_strength=jitter_strength,
                                   return_mask=return_mask, bg_mix_prob=bg_mix_prob,
-                                  dense_target_mode=dense_target_mode)
+                                  dense_target_mode=dense_target_mode,
+                                  mask_hw_s4=mask_hw_s4)
         name = os.path.basename(root)
         if "MoCA" in root and "MoCA_Mask" not in root:
             ds = Subset(ds, train_idx)
@@ -246,7 +248,12 @@ def main():
         return 1
     log(f"  Overlap check: OK (0)")
 
-    collate_fn = collate_video_clips_with_masks if return_mask else collate_video_clips
+    if head_type == "dense_fg_aux_ms":
+        collate_fn = collate_video_clips_ms
+    elif return_mask:
+        collate_fn = collate_video_clips_with_masks
+    else:
+        collate_fn = collate_video_clips
     train_batches_est = len(joint_train_ds) // train_batch_size
     train_loader = DataLoader(
         joint_train_ds, batch_size=train_batch_size, shuffle=True,
@@ -261,7 +268,8 @@ def main():
         [DEFAULT_VAL_DATASET], T=temporal_T_train, target_size=input_size,
         augment=False, temporal_stride=temporal_stride, cache_dir=cache_dir,
         resized_root=resized_root, jitter_strength=jitter_strength,
-        return_mask=return_mask, dense_target_mode=dense_target_mode
+        return_mask=return_mask, dense_target_mode=dense_target_mode,
+        mask_hw_s4=mask_hw_s4,
     )
     val_loader = DataLoader(
         Subset(val_moca_primary, val_idx), batch_size=eval_batch_size, shuffle=False,
@@ -292,8 +300,9 @@ def main():
         center_weight=loss_weights.get("center", 0.0),
         log_wh_weight=loss_weights.get("log_wh", 0.0),
         objectness_weight=loss_weights.get("objectness", 0.1) if head_type == "objectness_aux_head" else 0.0,
-        dense_fg_weight=loss_weights.get("dense_fg", 0.5) if head_type == "dense_fg_aux" else 0.0,
+        dense_fg_weight=loss_weights.get("dense_fg", 0.5) if head_type in ("dense_fg_aux", "dense_fg_aux_ms") else 0.0,
         dense_ce_weight=loss_weights.get("dense_ce", 0.5) if head_type == "dense_ce_aux" else 0.0,
+        dense_fg_s4_weight=loss_weights.get("dense_fg_s4", 0.25) if head_type == "dense_fg_aux_ms" else 0.0,
     )
     weight_decay = trial_config.get("weight_decay", 1e-4)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -378,7 +387,10 @@ def main():
         last_heartbeat = time.time()
         try:
             for batch_data in train_loader:
-                if return_mask:
+                if head_type == "dense_fg_aux_ms":
+                    frames, gt_bboxes, masks_s4, masks_s8 = batch_data
+                    gt_masks = (masks_s4.to(DEVICE), masks_s8.to(DEVICE))
+                elif return_mask:
                     frames, gt_bboxes, gt_masks = batch_data
                     gt_masks = gt_masks.to(DEVICE)
                 else:
@@ -418,9 +430,14 @@ def main():
                 if n_batches % 10 == 0:
                     heartbeat_elapsed = time.time() - last_heartbeat
                     last_heartbeat = time.time()
-                    log(f"  [e{epoch}] batch {n_batches}/{train_batches_est}+ | "
-                        f"last_10={heartbeat_elapsed:.1f}s | "
-                        f"loss={losses['loss'].item():.4f} miou={losses['mean_iou'].item():.4f}")
+                    hb = (f"  [e{epoch}] batch {n_batches}/{train_batches_est}+ | "
+                          f"last_10={heartbeat_elapsed:.1f}s | "
+                          f"loss={losses['loss'].item():.4f} miou={losses['mean_iou'].item():.4f}")
+                    if head_type == "dense_fg_aux_ms" and 's4_loss_ratio' in losses:
+                        hb += (f" | s4={losses.get('dense_fg_s4_loss', 0):.4f}"
+                               f" s8={losses.get('dense_fg_loss', 0):.4f}"
+                               f" r={losses.get('s4_loss_ratio', 0):.2f}")
+                    log(hb)
 
                 # Periodic cache clearing to prevent fragmentation OOM
                 if n_batches % 100 == 0 and DEVICE == "cuda":
@@ -504,7 +521,9 @@ def main():
         model.eval()
         all_preds, all_gts = [], []
         for batch_data in val_loader:
-            if return_mask:
+            if head_type == "dense_fg_aux_ms":
+                frames, gt_bboxes, _, _ = batch_data
+            elif return_mask:
                 frames, gt_bboxes, _ = batch_data
             else:
                 frames, gt_bboxes = batch_data
@@ -598,7 +617,9 @@ def main():
     model.eval()
     all_preds, all_gts = [], []
     for batch_data in val_loader:
-        if return_mask:
+        if head_type == "dense_fg_aux_ms":
+            frames, gt_bboxes, _, _ = batch_data
+        elif return_mask:
             frames, gt_bboxes, _ = batch_data
         else:
             frames, gt_bboxes = batch_data
