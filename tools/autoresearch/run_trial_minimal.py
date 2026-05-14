@@ -7,7 +7,7 @@ Anti-hang mechanisms:
   - Per-epoch batch timing stats
   - Image path sanity scan before training
 """
-import sys, os, time, json, random, argparse, heapq
+import sys, os, time, json, random, argparse, heapq, shutil
 from collections import defaultdict
 from datetime import datetime
 import numpy as np
@@ -632,8 +632,16 @@ def main():
         # Top-K checkpoint saving (E-56)
         # Min-heap tracks best K by val_mIoU. Rank files are rewritten from
         # sorted heap on every update so they always reflect current top-K.
+        # Policy: always force-save final epoch (unified-best in 6/7 probes).
         if topk_checkpoints > 1:
-            if len(topk_heap) < topk_checkpoints:
+            force_save = (epoch == epochs)
+            in_heap = any(e == epoch for _, e in topk_heap)
+            if force_save and not in_heap:
+                if len(topk_heap) >= topk_checkpoints:
+                    heapq.heapreplace(topk_heap, (val_miou, epoch))
+                else:
+                    heapq.heappush(topk_heap, (val_miou, epoch))
+            elif len(topk_heap) < topk_checkpoints:
                 heapq.heappush(topk_heap, (val_miou, epoch))
             elif val_miou > topk_heap[0][0]:
                 heapq.heapreplace(topk_heap, (val_miou, epoch))
@@ -654,7 +662,7 @@ def main():
                 if os.path.isfile(src):
                     if os.path.isfile(dst):
                         os.remove(dst)
-                    os.rename(src, dst)
+                    shutil.copy2(src, dst)
             # Clean stale rank files (e.g., if topk_checkpoints was reduced)
             for rank in range(len(topk_heap) + 1, topk_checkpoints + 1):
                 stale = os.path.join(trial_dir, f"checkpoint_rank{rank}.pth")
@@ -669,6 +677,12 @@ def main():
     # Save per-epoch metrics
     with open(os.path.join(trial_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(metrics_log, f, indent=2)
+
+    # Clean up leftover _topk_epoch files (checkpoint_rank files are the canonical copies)
+    if topk_checkpoints > 1:
+        import glob
+        for f in glob.glob(os.path.join(trial_dir, "_topk_epoch*.pth")):
+            os.remove(f)
 
     # ── Final eval ──
     log(f"\n[5/5] Final evaluation ...")

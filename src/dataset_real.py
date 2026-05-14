@@ -670,7 +670,7 @@ class RealVideoBBoxDataset(Dataset):
 
             # ── Dense masks ─────────────────────────────────────────
             if self.return_mask:
-                mask_s8 = self._load_mask(sample, fi, bbox, hw=28)
+                mask_s8 = self._load_mask(sample, fi, bbox, hw=self.target_size // 8)
                 if do_flip and self.dense_target_mode not in ("ce",):
                     mask_s8 = np.fliplr(mask_s8).copy()
                 masks_s8.append(torch.from_numpy(mask_s8))
