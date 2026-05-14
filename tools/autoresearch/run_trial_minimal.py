@@ -630,23 +630,36 @@ def main():
             }, os.path.join(trial_dir, "checkpoint_best.pth"))
 
         # Top-K checkpoint saving (E-56)
+        # Min-heap tracks best K by val_mIoU. Rank files are rewritten from
+        # sorted heap on every update so they always reflect current top-K.
         if topk_checkpoints > 1:
             if len(topk_heap) < topk_checkpoints:
                 heapq.heappush(topk_heap, (val_miou, epoch))
-                rank = len(topk_heap)
             elif val_miou > topk_heap[0][0]:
                 heapq.heapreplace(topk_heap, (val_miou, epoch))
-                rank = topk_checkpoints
-            else:
-                rank = 0
-            if rank > 0:
-                ckpt = {
-                    "epoch": epoch,
-                    "model_state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
-                    "miou": val_miou,
-                    "recall": val_recall,
-                }
-                torch.save(ckpt, os.path.join(trial_dir, f"checkpoint_rank{rank}.pth"))
+            # Save current epoch state under epoch-specific name
+            ckpt = {
+                "epoch": epoch,
+                "model_state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
+                "miou": val_miou,
+                "recall": val_recall,
+            }
+            torch.save(ckpt, os.path.join(trial_dir, f"_topk_epoch{epoch:04d}.pth"))
+            # Rewrite all rank files from sorted heap
+            for rank, (heap_miou, heap_epoch) in enumerate(
+                sorted(topk_heap, key=lambda x: x[0], reverse=True), 1
+            ):
+                src = os.path.join(trial_dir, f"_topk_epoch{heap_epoch:04d}.pth")
+                dst = os.path.join(trial_dir, f"checkpoint_rank{rank}.pth")
+                if os.path.isfile(src):
+                    if os.path.isfile(dst):
+                        os.remove(dst)
+                    os.rename(src, dst)
+            # Clean stale rank files (e.g., if topk_checkpoints was reduced)
+            for rank in range(len(topk_heap) + 1, topk_checkpoints + 1):
+                stale = os.path.join(trial_dir, f"checkpoint_rank{rank}.pth")
+                if os.path.isfile(stale):
+                    os.remove(stale)
 
         if val_recall > best_recall:
             best_recall = val_recall
