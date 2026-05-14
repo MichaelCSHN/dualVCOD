@@ -53,11 +53,20 @@ def run_reeval(trial_dir, backbone="efficientnet_b0", head_type="dense_fg_aux",
     print("=" * 70)
 
     # Find checkpoint files
-    ckpt_files = []
+    ckpt_files = []  # (rank_or_label, path)
+    seen_epochs = set()
+    # 1. checkpoint_rank*.pth (top-K)
     for k in range(1, 11):  # max 10
         path = os.path.join(trial_dir, f"checkpoint_rank{k}.pth")
         if os.path.isfile(path):
-            ckpt_files.append((k, path))
+            ckpt_files.append((f"rank{k}", path))
+    # 2. checkpoint_epochNNNN.pth (periodic saves)
+    import glob
+    for path in sorted(glob.glob(os.path.join(trial_dir, "checkpoint_epoch*.pth"))):
+        basename = os.path.basename(path)
+        # extract label like "e0035" from "checkpoint_epoch0035.pth"
+        label = basename.replace("checkpoint_epoch", "").replace(".pth", "")
+        ckpt_files.append((f"e{label}", path))
     if not ckpt_files:
         # Fallback: use checkpoint_best.pth
         best_path = os.path.join(trial_dir, "checkpoint_best.pth")

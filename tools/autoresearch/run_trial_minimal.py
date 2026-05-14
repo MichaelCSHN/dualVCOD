@@ -116,6 +116,8 @@ def main():
     parser.add_argument("--output_dir", type=str, default=None)
     parser.add_argument("--resume", action="store_true", default=False,
                         help="Resume from emergency checkpoint if present")
+    parser.add_argument("--resume-ckpt", type=str, default=None,
+                        help="Resume from explicit checkpoint file (model weights only)")
     args = parser.parse_args()
 
     if args.output_dir:
@@ -152,6 +154,12 @@ def main():
     bg_mix_prob = trial_config.get("bg_mix_prob", 0.0)
     dense_target_mode = trial_config.get("dense_target_mode", "hard")
     topk_checkpoints = trial_config.get("topk_checkpoints", 1)
+    checkpoint_epochs = trial_config.get("checkpoint_epochs", [])
+    # Smart default for >=30ep runs: every 5 epochs before E30, every epoch after E30.
+    # This guarantees dense late-stage coverage for unified reeval without
+    # relying on training-val top-K (which is 10/10 wrong for checkpoint selection).
+    if not checkpoint_epochs and epochs >= 30:
+        checkpoint_epochs = list(range(5, 30, 5)) + list(range(30, epochs + 1))
     zoom_enabled = trial_config.get("zoom_enabled", False)
     zoom_context_factor = trial_config.get("zoom_context_factor", 2.0)
     zoom_prob_tiny = trial_config.get("zoom_prob_tiny", 0.8)
@@ -385,6 +393,38 @@ def main():
             train_batch_size = resume_batch_size
     elif args.resume:
         log("\n[resume] No emergency checkpoint found — starting fresh")
+
+    # ── Resume from explicit checkpoint (model weights only) ──
+    if args.resume_ckpt:
+        log(f"\n[resume-ckpt] Loading model weights from {args.resume_ckpt} ...")
+        ckpt = torch.load(args.resume_ckpt, map_location="cpu", weights_only=False)
+        model.load_state_dict({k: v.to(DEVICE) for k, v in ckpt["model_state_dict"].items()})
+        ckpt_epoch = ckpt.get("epoch", 0)
+        start_epoch = ckpt_epoch + 1
+        log(f"  Checkpoint epoch: {ckpt_epoch}")
+        log(f"  Resuming from epoch {start_epoch}/{epochs}")
+        # Step scheduler to align with resumed epoch position
+        for _ in range(start_epoch - 1):
+            scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+        log(f"  Scheduler stepped to epoch {start_epoch}, LR={current_lr:.6e}")
+        # Load parent metrics_log for topk_heap reconstruction
+        resume_metrics_path = os.path.join(trial_dir, "metrics.json")
+        if os.path.isfile(resume_metrics_path):
+            with open(resume_metrics_path, "r", encoding="utf-8") as f:
+                existing_metrics = json.load(f)
+            for e in existing_metrics:
+                if e.get("epoch", 0) < start_epoch:
+                    metrics_log.append(e)
+            log(f"  Loaded {len(metrics_log)} prior metrics from trial_dir")
+        # Rebuild topk_heap from loaded metrics
+        if topk_checkpoints > 1 and metrics_log:
+            for e in metrics_log:
+                if len(topk_heap) < topk_checkpoints:
+                    heapq.heappush(topk_heap, (e["val_miou"], e["epoch"]))
+                elif e["val_miou"] > topk_heap[0][0]:
+                    heapq.heapreplace(topk_heap, (e["val_miou"], e["epoch"]))
+            log(f"  Rebuilt topk_heap: {[(round(m,4), ep) for m, ep in topk_heap]}")
 
     # ── Training ──
     log(f"\n[4/5] Training {epochs} epochs (heartbeat every 10 batches, timeout=120s)...")
@@ -629,10 +669,16 @@ def main():
                 "recall": val_recall,
             }, os.path.join(trial_dir, "checkpoint_best.pth"))
 
-        # Top-K checkpoint saving (E-56)
+        # Top-K checkpoint saving
         # Min-heap tracks best K by val_mIoU. Rank files are rewritten from
         # sorted heap on every update so they always reflect current top-K.
-        # Policy: always force-save final epoch (unified-best in 6/7 probes).
+        # POLICY (2026-05-15): training-val top-K is INSUFFICIENT for checkpoint
+        # selection (10/10 disagreements). Three mechanisms now work together:
+        #   1. top-K heap: best K by training val (informational only)
+        #   2. final-epoch force-save: always save last epoch
+        #   3. checkpoint_epochs: periodic saves (auto for >=30ep: every 5 before
+        #      E30, every epoch after E30)
+        # Unified reeval MUST be used for all checkpoint selection decisions.
         if topk_checkpoints > 1:
             force_save = (epoch == epochs)
             in_heap = any(e == epoch for _, e in topk_heap)
@@ -668,6 +714,17 @@ def main():
                 stale = os.path.join(trial_dir, f"checkpoint_rank{rank}.pth")
                 if os.path.isfile(stale):
                     os.remove(stale)
+
+        # Periodic checkpoint saving (checkpoint_epochs config)
+        if epoch in checkpoint_epochs:
+            ckpt_path = os.path.join(trial_dir, f"checkpoint_epoch{epoch:04d}.pth")
+            if not os.path.isfile(ckpt_path):
+                torch.save({
+                    "epoch": epoch,
+                    "model_state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
+                    "miou": val_miou,
+                    "recall": val_recall,
+                }, ckpt_path)
 
         if val_recall > best_recall:
             best_recall = val_recall
