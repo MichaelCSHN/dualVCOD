@@ -13,6 +13,7 @@ import hashlib
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision import io as tvio
 from collections import defaultdict
@@ -85,7 +86,10 @@ class RealVideoBBoxDataset(Dataset):
     def __init__(self, dataset_paths, T=5, target_size=224, dataset_names=None, augment=False,
                  temporal_stride=1, cache_dir=None, resized_root=None, jitter_strength=0.15,
                  return_mask=False, bg_mix_prob=0.0, dense_target_mode="hard",
-                 mask_hw_s4=None):
+                 mask_hw_s4=None,
+                 zoom_enabled=False, zoom_context_factor=2.0,
+                 zoom_prob_tiny=0.8, zoom_prob_small=0.5,
+                 zoom_prob_medium=0.2, zoom_prob_large=0.0):
         self.T = T
         self.target_size = target_size
         self.augment = augment
@@ -97,6 +101,12 @@ class RealVideoBBoxDataset(Dataset):
         self.bg_mix_prob = bg_mix_prob
         self.dense_target_mode = dense_target_mode
         self.mask_hw_s4 = mask_hw_s4
+        self.zoom_enabled = zoom_enabled
+        self.zoom_context_factor = zoom_context_factor
+        self.zoom_prob_tiny = zoom_prob_tiny
+        self.zoom_prob_small = zoom_prob_small
+        self.zoom_prob_medium = zoom_prob_medium
+        self.zoom_prob_large = zoom_prob_large
         self._src_roots = []  # list of (source_root, dataset_basename) for path mapping
         self.samples = []  # list of {path, video, start_frame, annot_interval, bbox_map}
 
@@ -586,6 +596,24 @@ class RealVideoBBoxDataset(Dataset):
             jitter_contrast = 1.0 + random.uniform(-s, s)
             jitter_saturation = 1.0 + random.uniform(-s, s)
 
+        # ── Scale-adaptive zoom (E-54): consistent across clip ──
+        zoom_crop = None
+        if self.augment and self.zoom_enabled:
+            mid_fi = frame_indices[len(frame_indices) // 2]
+            mid_bbox = sample["bbox_map"].get(mid_fi)
+            if mid_bbox is not None:
+                mid_area = (mid_bbox[2] - mid_bbox[0]) * (mid_bbox[3] - mid_bbox[1])
+                if mid_area < 0.01:
+                    zoom_prob = self.zoom_prob_tiny
+                elif mid_area < 0.05:
+                    zoom_prob = self.zoom_prob_small
+                elif mid_area < 0.15:
+                    zoom_prob = self.zoom_prob_medium
+                else:
+                    zoom_prob = self.zoom_prob_large
+                if random.random() < zoom_prob:
+                    zoom_crop = self._compute_zoom_params(mid_bbox, self.zoom_context_factor)
+
         # ── Background mixing (E-42): shared bg for temporal consistency ──
         do_bg_mix = (
             self.augment and self.bg_mix_prob > 0
@@ -613,6 +641,10 @@ class RealVideoBBoxDataset(Dataset):
                 img_t = img.float() / 255.0
             else:
                 img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+
+            # ── Scale-adaptive zoom (E-54) ──
+            if zoom_crop is not None:
+                img_t, bbox_before_flip = self._apply_zoom(img_t, bbox_before_flip, zoom_crop)
 
             # ── Background mixing: replace background before flip/jitter ──
             if bg_frame is not None:
@@ -679,6 +711,61 @@ class RealVideoBBoxDataset(Dataset):
                                   interpolation=cv2.INTER_AREA)
                 return (mask > 0).astype(np.float32)
         return self._bbox_to_mask(bbox_norm, self.target_size, self.target_size)
+
+    # ── Scale-adaptive zoom (E-54) ───────────────────────────────────────
+
+    @staticmethod
+    def _compute_zoom_params(mid_bbox, context_factor):
+        """Compute zoom crop region from middle-frame bbox.
+
+        Expands the bbox by context_factor (e.g. 2.0 = 2× bbox size),
+        clamped to [0, 1]. Returns normalized [cx1, cy1, cx2, cy2] or None.
+        """
+        cx = (mid_bbox[0] + mid_bbox[2]) / 2.0
+        cy = (mid_bbox[1] + mid_bbox[3]) / 2.0
+        bw = max(mid_bbox[2] - mid_bbox[0], 0.01)
+        bh = max(mid_bbox[3] - mid_bbox[1], 0.01)
+        crop_size = max(bw, bh) * context_factor
+        half = crop_size / 2.0
+        cx1 = max(0.0, cx - half)
+        cy1 = max(0.0, cy - half)
+        cx2 = min(1.0, cx + half)
+        cy2 = min(1.0, cy + half)
+        if cx2 <= cx1 or cy2 <= cy1:
+            return None
+        return np.array([cx1, cy1, cx2, cy2], dtype=np.float32)
+
+    @staticmethod
+    def _apply_zoom(img_t, bbox, zoom_crop):
+        """Crop + resize a single frame and transform its bbox.
+
+        Args:
+            img_t: (C, H, W) float tensor in [0, 1]
+            bbox:  (4,) numpy float32 in normalized [0, 1]
+            zoom_crop: (4,) numpy float32 [cx1, cy1, cx2, cy2] normalized
+
+        Returns:
+            (img_t_resized, bbox_transformed)
+        """
+        C, H, W = img_t.shape
+        cx1, cy1, cx2, cy2 = zoom_crop
+        ix1 = max(0, int(cx1 * W))
+        iy1 = max(0, int(cy1 * H))
+        ix2 = min(W, int(cx2 * W))
+        iy2 = min(H, int(cy2 * H))
+        cropped = img_t[:, iy1:iy2, ix1:ix2].unsqueeze(0)
+        resized = F.interpolate(cropped, size=(H, W), mode='bilinear', align_corners=False)
+        img_out = resized.squeeze(0)
+        crop_w = cx2 - cx1
+        crop_h = cy2 - cy1
+        new_bbox = np.array([
+            (bbox[0] - cx1) / crop_w,
+            (bbox[1] - cy1) / crop_h,
+            (bbox[2] - cx1) / crop_w,
+            (bbox[3] - cy1) / crop_h,
+        ], dtype=np.float32)
+        new_bbox = np.clip(new_bbox, 0.0, 1.0)
+        return img_out, new_bbox
 
     def _pick_background(self, exclude_dir):
         """Pick a random frame from a different video as compositing background.

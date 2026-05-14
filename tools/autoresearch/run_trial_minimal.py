@@ -7,7 +7,7 @@ Anti-hang mechanisms:
   - Per-epoch batch timing stats
   - Image path sanity scan before training
 """
-import sys, os, time, json, random, argparse
+import sys, os, time, json, random, argparse, heapq
 from collections import defaultdict
 from datetime import datetime
 import numpy as np
@@ -151,6 +151,13 @@ def main():
     jitter_strength = trial_config.get("jitter_strength", 0.15)
     bg_mix_prob = trial_config.get("bg_mix_prob", 0.0)
     dense_target_mode = trial_config.get("dense_target_mode", "hard")
+    topk_checkpoints = trial_config.get("topk_checkpoints", 1)
+    zoom_enabled = trial_config.get("zoom_enabled", False)
+    zoom_context_factor = trial_config.get("zoom_context_factor", 2.0)
+    zoom_prob_tiny = trial_config.get("zoom_prob_tiny", 0.8)
+    zoom_prob_small = trial_config.get("zoom_prob_small", 0.5)
+    zoom_prob_medium = trial_config.get("zoom_prob_medium", 0.2)
+    zoom_prob_large = trial_config.get("zoom_prob_large", 0.0)
     train_seed = trial_config.get("train_seed", None)
     hypothesis = trial_config.get("hypothesis", "")
 
@@ -198,6 +205,9 @@ def main():
         resized_root=resized_root, jitter_strength=jitter_strength,
         return_mask=return_mask, bg_mix_prob=bg_mix_prob,
         dense_target_mode=dense_target_mode, mask_hw_s4=mask_hw_s4,
+        zoom_enabled=zoom_enabled, zoom_context_factor=zoom_context_factor,
+        zoom_prob_tiny=zoom_prob_tiny, zoom_prob_small=zoom_prob_small,
+        zoom_prob_medium=zoom_prob_medium, zoom_prob_large=zoom_prob_large,
     )
     log(f"  MoCA split dataset: {len(moca_split_ds)} samples")
 
@@ -219,7 +229,10 @@ def main():
                                   jitter_strength=jitter_strength,
                                   return_mask=return_mask, bg_mix_prob=bg_mix_prob,
                                   dense_target_mode=dense_target_mode,
-                                  mask_hw_s4=mask_hw_s4)
+                                  mask_hw_s4=mask_hw_s4,
+                                  zoom_enabled=zoom_enabled, zoom_context_factor=zoom_context_factor,
+                                  zoom_prob_tiny=zoom_prob_tiny, zoom_prob_small=zoom_prob_small,
+                                  zoom_prob_medium=zoom_prob_medium, zoom_prob_large=zoom_prob_large)
         name = os.path.basename(root)
         if "MoCA" in root and "MoCA_Mask" not in root:
             ds = Subset(ds, train_idx)
@@ -270,6 +283,9 @@ def main():
         resized_root=resized_root, jitter_strength=jitter_strength,
         return_mask=return_mask, dense_target_mode=dense_target_mode,
         mask_hw_s4=mask_hw_s4,
+        zoom_enabled=zoom_enabled, zoom_context_factor=zoom_context_factor,
+        zoom_prob_tiny=zoom_prob_tiny, zoom_prob_small=zoom_prob_small,
+        zoom_prob_medium=zoom_prob_medium, zoom_prob_large=zoom_prob_large,
     )
     val_loader = DataLoader(
         Subset(val_moca_primary, val_idx), batch_size=eval_batch_size, shuffle=False,
@@ -303,6 +319,8 @@ def main():
         dense_fg_weight=loss_weights.get("dense_fg", 0.5) if head_type in ("dense_fg_aux", "dense_fg_aux_ms") else 0.0,
         dense_ce_weight=loss_weights.get("dense_ce", 0.5) if head_type == "dense_ce_aux" else 0.0,
         dense_fg_s4_weight=loss_weights.get("dense_fg_s4", 0.25) if head_type == "dense_fg_aux_ms" else 0.0,
+        large_coverage_weight=loss_weights.get("large_coverage", 0.0),
+        large_area_threshold=loss_weights.get("large_area_threshold", 0.15),
     )
     weight_decay = trial_config.get("weight_decay", 1e-4)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -332,6 +350,7 @@ def main():
     best_miou = 0.0
     best_recall = 0.0
     metrics_log = []
+    topk_heap = []  # (val_miou, epoch) min-heap for E-56
     oom_retry_count = 0
     resume_batch_size = None
 
@@ -352,6 +371,14 @@ def main():
             resume_batch_size = ckpt["trial_config"].get("train_batch_size")
         log(f"  Resuming from epoch {start_epoch}/{epochs}")
         log(f"  Restored best: mIoU={best_miou:.4f}  R@0.5={best_recall:.4f}")
+        # Rebuild topk_heap from metrics_log entries < start_epoch
+        if topk_checkpoints > 1 and metrics_log:
+            for e in metrics_log:
+                if e["epoch"] < start_epoch:
+                    if len(topk_heap) < topk_checkpoints:
+                        heapq.heappush(topk_heap, (e["val_miou"], e["epoch"]))
+                    elif e["val_miou"] > topk_heap[0][0]:
+                        heapq.heapreplace(topk_heap, (e["val_miou"], e["epoch"]))
         log(f"  Prior OOM retries: {oom_retry_count}")
         if resume_batch_size and resume_batch_size < train_batch_size:
             log(f"  Batch reduced: {train_batch_size} → {resume_batch_size} (post-OOM)")
@@ -601,6 +628,25 @@ def main():
                 "miou": val_miou,
                 "recall": val_recall,
             }, os.path.join(trial_dir, "checkpoint_best.pth"))
+
+        # Top-K checkpoint saving (E-56)
+        if topk_checkpoints > 1:
+            if len(topk_heap) < topk_checkpoints:
+                heapq.heappush(topk_heap, (val_miou, epoch))
+                rank = len(topk_heap)
+            elif val_miou > topk_heap[0][0]:
+                heapq.heapreplace(topk_heap, (val_miou, epoch))
+                rank = topk_checkpoints
+            else:
+                rank = 0
+            if rank > 0:
+                ckpt = {
+                    "epoch": epoch,
+                    "model_state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
+                    "miou": val_miou,
+                    "recall": val_recall,
+                }
+                torch.save(ckpt, os.path.join(trial_dir, f"checkpoint_rank{rank}.pth"))
 
         if val_recall > best_recall:
             best_recall = val_recall

@@ -1,0 +1,33 @@
+{
+  "backbone": "efficientnet_b0",
+  "input_size": 224,
+  "temporal_T": 5,
+  "temporal_stride": 1,
+  "sampler": "window_uniform",
+  "head": "dense_fg_aux",
+  "lr": 0.0003,
+  "batch_size": 16,
+  "train_batch_size": 16,
+  "eval_batch_size": 64,
+  "epochs": 30,
+  "total_epochs": 30,
+  "train_seed": 42,
+  "num_workers": 2,
+  "resized_root": "C:\\datasets_224",
+  "weight_decay": 0.0001,
+  "jitter_strength": 0.15,
+  "loss_weights": {
+    "smooth_l1": 1.0,
+    "giou": 1.0,
+    "center": 0.0,
+    "use_diou": true,
+    "dense_fg": 0.5
+  },
+  "warmup_epochs": 3,
+  "dense_target_mode": "hard",
+  "hypothesis": "E-52: EfficientNet-B0 + hard dense_fg_aux 30ep — does the E-51 8ep positive signal (+0.0090 pf_mIoU) survive 30ep training and beat E-40 (MV3-Small 30ep, 0.8564)? 2×2 design: backbone (MV3-Small vs EffB0) × epochs (8ep vs 30ep). E-51 lr=3e-4 + warmup=3 confirmed stable — same settings here. If pf_mIoU > E-40 (0.8564), EfficientNet-B0 is a validated mainline candidate. If pf_mIoU ≤ E-40 or NaN appears with extended training, MV3-Small hard dense_fg remains canonical.",
+  "trial_id": "expl_52_effb0_densefg_30ep",
+  "parent_trial": "expl_51_effb0_densefg_8ep",
+  "no_commit": true,
+  "no_push": true
+}

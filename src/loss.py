@@ -171,7 +171,8 @@ class BBoxLoss(nn.Module):
     def __init__(self, smooth_l1_weight=1.0, giou_weight=1.0, use_diou=False,
                  use_ciou=False, center_weight=0.0, log_wh_weight=0.0,
                  objectness_weight=0.0, dense_fg_weight=0.0, dense_ce_weight=0.0,
-                 dense_fg_s4_weight=0.0):
+                 dense_fg_s4_weight=0.0,
+                 large_coverage_weight=0.0, large_area_threshold=0.15):
         super().__init__()
         self.smooth_l1_weight = smooth_l1_weight
         self.giou_weight = giou_weight
@@ -183,6 +184,8 @@ class BBoxLoss(nn.Module):
         self.dense_fg_weight = dense_fg_weight
         self.dense_ce_weight = dense_ce_weight
         self.dense_fg_s4_weight = dense_fg_s4_weight
+        self.large_coverage_weight = large_coverage_weight
+        self.large_area_threshold = large_area_threshold
 
     def forward(self, pred, gt, gt_masks=None):
         """Compute composite loss.
@@ -267,6 +270,25 @@ class BBoxLoss(nn.Module):
                           F.mse_loss(torch.log(h_pred), torch.log(h_gt))
             total = total + self.log_wh_weight * log_wh_loss
             result["log_wh_loss"] = log_wh_loss.detach()
+
+        # Large-object under-coverage penalty (E-55)
+        if self.large_coverage_weight > 0:
+            gt_area = (gt[..., 2] - gt[..., 0]).clamp(min=0) * \
+                      (gt[..., 3] - gt[..., 1]).clamp(min=0)
+            large_mask = (gt_area > self.large_area_threshold).float()
+            ix1 = torch.max(pred[..., 0], gt[..., 0])
+            iy1 = torch.max(pred[..., 1], gt[..., 1])
+            ix2 = torch.min(pred[..., 2], gt[..., 2])
+            iy2 = torch.min(pred[..., 3], gt[..., 3])
+            inter = (ix2 - ix1).clamp(min=0) * (iy2 - iy1).clamp(min=0)
+            coverage = inter / (gt_area + 1e-6)
+            under_coverage = (1.0 - coverage).clamp(min=0)
+            large_penalty = (under_coverage * large_mask).sum() / (large_mask.sum() + 1e-6)
+            total = total + self.large_coverage_weight * large_penalty
+            result["large_coverage_loss"] = large_penalty.detach()
+            n_large = large_mask.sum()
+            result["large_coverage_mean"] = ((coverage * large_mask).sum() / (n_large + 1e-6)).detach()
+            result["large_frame_frac"] = large_mask.mean().detach()
 
         # Objectness auxiliary loss
         if obj_pred is not None and self.objectness_weight > 0:
