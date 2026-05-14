@@ -1,18 +1,109 @@
-# 当前任务：M1-M2 MicroVCOD Baseline & 环境搭建
+# Current Task: Next-Phase Precision Engineering
 
-## 1. 任务目标
-完成项目“破冰”：建立正确的 Conda 视频开发环境，并跑通第一版基于多帧输入的极简 BBox 检测和评估流水线。
+Phase 2 exploration is complete. We are no longer probing hyperparameters or
+trying arbitrary auxiliary heads. The current phase targets **specific,
+named failure modes** with minimal, justified interventions.
 
-## 2. 执行范围 (Must Do)
-1.  **环境准备 (Critical)**：建立 conda 环境 `dualvcod`。请直接从现有的 `dualcod-cu` 环境克隆（执行 `conda create --name dualvcod --clone dualcod-cu`），以复用 PyTorch 和 CUDA 依赖。后续所有开发必须在该环境内进行。
-2.  **数据流构建**：编写轻量级的视频帧读取器（Dataloader 雏形），能够读取短视频片段（如 5 帧滑动窗口）并转换为 Tensor。
-3.  **假数据评估器**：编写 `eval/eval_video_bbox.py`，实现多帧时序下的 BBox 评估指标（如 `mean bbox IoU`, `Recall@0.5`）。
-4.  **基准测试桩 (Stub)**：编写极简 MicroVCOD_Lite Model，接收 $(B, T, C, H, W)$ 格式的输入，输出对应帧的 BBox 坐标，证明整个数据前向流程和评估管线畅通。
+## 1. State at Entry
 
-## 3. 测试与验证 (Acceptance Criteria)
-不需要真实 MoCA 或 CAD 数据集，请使用随机生成的 numpy array (Synthetic Data) 模拟视频帧完成 Smoke Test：
-*   Dummy 模型能够吃进多帧张量，且不报显存或维度错误。
-*   评估脚本能够正确对比预测出的 BBox 和 GT BBox 序列，输出平均 IoU 和 FPS。
+- Canonical baseline: E-40 (MV3-Small, hard dense_fg_aux, 30ep) —
+  pf_mIoU 0.8564.
+- Stronger variant: E-52 (EffB0, hard dense_fg_aux, 30ep) —
+  pf_mIoU 0.8711.
+- Evaluation protocol: Unified reeval on np.random.RandomState(42)
+  MoCA val split.
+- E-53a closed: multi-scale dense supervision catastrophically degraded
+  tiny-object detection.
+- E-54/E-55/E-56 code: Implemented but **not experimentally validated**.
 
-## 4. 产出要求
-完成后，在 `reports/` 生成名为 `phase1.1-yyyymmddhhmm.md` 的简短报告，列出新增的脚本清单、环境创建确认及 Dummy 测试的运行结果。等待下一步正式实现 TN 模块的指令。
+## 2. Priority Queue
+
+### P0 — Governance & Infrastructure (CURRENT)
+
+These must complete before any new training experiments.
+
+1. **E-52 archive cleanup**
+   - Archive E-52 checkpoint, config, and unified reeval output.
+   - Write final E-52 report with full metric breakdown.
+   - Update all docs to reference E-52 as stronger variant.
+   - Status: E-52 trained and reevaluated; archive pending.
+
+2. **Top-K checkpoint unified reeval infrastructure**
+   - `tools/autoresearch/run_trial_minimal.py` now supports `topk_checkpoints`
+     config parameter. `tools/autoresearch/reeval_checkpoints.py` is the
+     standalone reeval script.
+   - Must validate on at least one completed experiment before declaring
+     operational.
+   - Status: Implementation complete, not validated.
+
+3. **Composite score design**
+   - Draft a composite metric that weights pf_mIoU, bad_frame_rate,
+     size-bin IoU, and hard-video metrics into a single go/no-go number.
+   - See `docs/04_METRIC_AND_ERROR_TAXONOMY.md` for the draft.
+   - Status: Draft written, not calibrated.
+
+4. **Docs/README consistency**
+   - All five docs (`00`–`04`) + README must agree on baselines,
+     closed directions, eval protocol, and next steps.
+   - Status: This document set is the reconciliation.
+
+### P1-P7 — Precision Engineering Experiments
+
+See `docs/03_EXPERIMENT_ROADMAP.md` for full details. Summary:
+
+| Priority | Direction | Target Error Type | Status |
+|----------|-----------|-------------------|--------|
+| P1 | MV3-Small conservative zoom probe | Tiny-object inaccuracy | Not started |
+| P2 | EffB0 zoom probe | Tiny-object inaccuracy | Not started |
+| P3 | MV3-Small coverage-aware loss | Large-object under-coverage | Not started |
+| P4 | EffB0 coverage-aware loss | Large-object under-coverage | Not started |
+| P5 | COD dense pretraining | Generalization gap | Not started |
+| P6 | Temporal dilation | Fast-motion degradation | Not started |
+| P7 | EffB0 → MV3-Small distillation | Backbone cost gap | Not started |
+
+### E-54/E-55/E-56 — Implementation Complete, Not Validated
+
+Code for three precision-engineering experiments has been written:
+
+- **E-54** (`src/dataset_real.py`): Scale-aware natural zoom augmentation.
+  Expands bbox by context_factor, crops, resizes back to 224. Triggers with
+  higher probability for smaller objects. Clip-consistent across T=5.
+- **E-55** (`src/loss.py`): Large-object under-coverage penalty.
+  `coverage = |pred∩gt| / |gt_area|`. Asymmetric — only penalizes
+  under-coverage. Weight 0.1, threshold area > 0.15.
+- **E-56** (`tools/autoresearch/run_trial_minimal.py` +
+  `tools/autoresearch/reeval_checkpoints.py`): Top-K checkpoint saving
+  and post-training unified reeval.
+
+**These are NOT experimentally validated.** They compile and pass synthetic
+unit tests but have not been run on real data. No performance claims should
+be made. They are positioned as:
+
+1. Infrastructure ready for P1-P4 experiments.
+2. Code to be validated with 1-epoch smoke tests before any 8ep/30ep run.
+3. Subject to revision based on smoke test results.
+
+## 3. Experiment Design Rules (All Future Work)
+
+Every new experiment must:
+
+1. Name the specific error type it targets (see taxonomy in `04`).
+2. State expected improvement in which metrics.
+3. Define success criteria AND no-go criteria BEFORE training.
+4. Use a single-variable change vs the canonical baseline.
+5. Run unified reeval (not training-log best_val_mIoU) as the final
+   arbiter.
+6. Report: pf_mIoU, bad_frame_rate, R@0.5, size-bin IoU, area_ratio,
+   center_error, error type counts, hard-video metrics.
+7. State whether inference cost changes (params, FPS).
+8. Provide a rollback plan if the experiment fails.
+
+## 4. What We Do NOT Do
+
+- No more grid-search hyperparameter tuning.
+- No new auxiliary head architectures without a specific error-type
+  hypothesis.
+- No background mixing, soft_bbox, adaptive softening, Center+Extent,
+  MV3-Large, or E-53b.
+- No training runs before P0 governance tasks complete.
+- No claims about E-54/E-55/E-56 efficacy before experimental validation.
