@@ -47,7 +47,7 @@ These must complete before any new training experiments.
      closed directions, eval protocol, and next steps.
    - Status: This document set is the reconciliation.
 
-### P1-P7 — Precision Engineering Experiments
+### P1-P8 — Precision Engineering Experiments
 
 See `docs/03_EXPERIMENT_ROADMAP.md` for full details. Summary:
 
@@ -57,9 +57,36 @@ See `docs/03_EXPERIMENT_ROADMAP.md` for full details. Summary:
 | P2 | EffB0 zoom probe | Tiny-object inaccuracy | Not started |
 | P3 | MV3-Small coverage-aware loss | Large-object under-coverage | Not started |
 | P4 | EffB0 coverage-aware loss | Large-object under-coverage | Not started |
-| P5 | COD dense pretraining | Generalization gap | Not started |
-| P6 | Temporal dilation | Fast-motion degradation | Not started |
-| P7 | EffB0 → MV3-Small distillation | Backbone cost gap | Not started |
+| P5 | Temporal dilation | Fast-motion degradation | Not started |
+| P6 | Dense target refinement (CAUTIOUS PROBE) | Spatial accuracy | Not started |
+| P7 | COD dense pretraining (RESERVE) | Generalization gap | Not started |
+| P8 | EffB0 → MV3-Small distillation (RESERVE) | Backbone cost gap | Not started |
+
+**P5 (Temporal dilation)** is promoted from old P6. T=5 fixed, temporal
+stride/gap ∈ {2, 3}. Zero parameter change, zero architecture change.
+Motivated by GreenVCOD long-term temporal context validation, but does not
+copy GreenVCOD's short/long ensemble.
+
+**P6 (Dense target refinement)** is a CAUTIOUS PROBE, not a high-confidence
+direction. It modifies only the training-only `dense_fg_aux` BCE target mask
+at the existing stride-8 resolution. The bbox regression target remains
+hard. No new dense head resolution, no segmentation inference, no multi-scale
+dense supervision. This is NOT the same as soft_bbox (which modified the
+primary bbox regression target), adaptive Gaussian softening (which modified
+bbox target σ), or E-53a (which added stride-4 multi-scale dense heads).
+Strict no-go: pf_mIoU drop > 0.01, tiny IoU drop > 0.02, pygmy_seahorse_0
+drop > 0.03, any size bin drop > 0.03, pred_too_large increase > 20%, NaN
+or loss instability. See `docs/03` §P6 for full specification.
+
+**P7 (COD dense pretraining)** is demoted to RESERVE. GreenVCOD uses COD
+pretraining but does not isolate its marginal contribution. Activation
+condition: only revisit if P1-P6 saturate and a remaining failure mode
+plausibly requires image-COD spatial priors.
+
+**P8 (EffB0 → MV3-Small distillation)** is demoted to RESERVE. Activation
+condition: only after EffB0/E-52 advantage is fully characterized and
+MV3-Small zero-inference-cost interventions are exhausted. If attempted,
+prefer feature-level / dense-logit guidance over naive bbox KL.
 
 ### E-54/E-55/E-56 — Implementation Complete, Not Validated
 

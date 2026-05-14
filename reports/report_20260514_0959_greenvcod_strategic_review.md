@@ -1,5 +1,17 @@
 # GreenVCOD Strategic Re-Analysis & Revised Exploration Plan — 2026-05-14 09:59
 
+> **SUPERSEDED / 已被修正版取代**
+>
+> This report has been superseded by:
+> `reports/report_20260514_1007_greenvcod_strategy_amended.md`
+>
+> The original version contained inaccurate descriptions of GreenVCOD, including:
+> - incorrectly describing pixel-wise prediction maps as a "dense prediction teacher";
+> - incorrectly implying component-level ablation for dense prediction / teacher;
+> - overstating GreenVCOD as comprehensive SOTA / mIoU winner.
+>
+> Use the amended report as the authoritative GreenVCOD strategy reference.
+
 ## Context
 
 Post-Phase-2, pre-experiment governance review. The docs overhaul (reports/report_20260514_1230) established baselines, closed directions, eval
